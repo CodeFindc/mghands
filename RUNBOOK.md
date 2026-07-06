@@ -73,14 +73,20 @@ Gateway 不在自身进程内直接运行裸 `Conversation.run()`。它负责容
 容器创建 SDK 会话时会默认装配 OpenHands 官方编码能力。当前装配策略优先使用：
 
 ```text
-openhands.tools.register_builtins_agents(enable_browser=True)
-openhands.tools.get_default_tools(enable_browser=True, enable_sub_agents=True)
+openhands.tools.register_builtins_agents(enable_browser=$MGHANDS_ENABLE_BROWSER_TOOLS)
+openhands.tools.get_default_tools(enable_browser=$MGHANDS_ENABLE_BROWSER_TOOLS, enable_sub_agents=True)
 openhands.sdk.settings.OpenHandsAgentSettings
 openhands.sdk.AgentContext
 openhands.sdk.settings.ConversationSettings
 ```
 
-如果当前 SDK 版本缺少其中某个入口，容器会退回到最小 `Conversation` 构造路径。调度器可以通过 `GET /server_info` 查看 `default_coding_tools_enabled=true` 和 `default_tool_sources`，确认该容器声明的默认编码工具来源。
+默认关闭浏览器工具，因为它需要 Chromium。核心编码能力仍包括文件编辑、终端等工具。如果当前 SDK 版本缺少其中某个入口，容器会退回到最小 `Conversation` 构造路径。调度器可以通过 `GET /server_info` 查看 `default_coding_tools_enabled=true`、`browser_tools_enabled` 和 `default_tool_sources`，确认该容器声明的默认编码工具来源。
+
+如需启用浏览器工具，需要在镜像内安装 Chromium/Playwright 依赖，并在启动容器时设置：
+
+```bash
+-e MGHANDS_ENABLE_BROWSER_TOOLS=true
+```
 
 ## 2. 前置条件
 

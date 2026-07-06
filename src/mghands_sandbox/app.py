@@ -13,7 +13,12 @@ from mghands_sandbox.models import (
     Success,
     UpdateRuntimeRequest,
 )
-from mghands_sandbox.sdk_runtime import SDKBuildError, SDKRuntime, SDKUnavailableError
+from mghands_sandbox.sdk_runtime import (
+    SDKBuildError,
+    SDKRunError,
+    SDKRuntime,
+    SDKUnavailableError,
+)
 
 SESSION_KEYS = {
     value
@@ -70,9 +75,11 @@ async def ready():
 async def server_info() -> ServerInfo:
     return ServerInfo(
         standard_endpoints=STANDARD_ENDPOINTS,
+        browser_tools_enabled=os.getenv('MGHANDS_ENABLE_BROWSER_TOOLS', '').lower()
+        in {'1', 'true', 'yes'},
         default_tool_sources=[
-            'openhands.tools.get_default_tools(enable_browser=True, enable_sub_agents=True)',
-            'openhands.tools.register_builtins_agents(enable_browser=True)',
+            'openhands.tools.get_default_tools(enable_browser=$MGHANDS_ENABLE_BROWSER_TOOLS, enable_sub_agents=True)',
+            'openhands.tools.register_builtins_agents(enable_browser=$MGHANDS_ENABLE_BROWSER_TOOLS)',
             'openhands.sdk.settings.OpenHandsAgentSettings',
             'openhands.sdk.AgentContext',
         ],
@@ -92,6 +99,8 @@ async def start_conversation(request: StartConversationRequest):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except SDKBuildError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except SDKRunError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
 
 @app.get('/api/conversations', dependencies=[Depends(verify_session_key)])
@@ -123,6 +132,8 @@ async def send_event(conversation_id: str, request: MessageRequest):
         return await runtime.send_message(conversation_id, request)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'conversation not found') from exc
+    except SDKRunError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
 
 
 @app.get(

@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,10 @@ class SDKUnavailableError(RuntimeError):
 
 
 class SDKBuildError(RuntimeError):
+    pass
+
+
+class SDKRunError(RuntimeError):
     pass
 
 
@@ -81,6 +86,7 @@ class SDKRuntime:
             active_conversation_ids=list(self._conversations),
             session_auth_enabled=session_auth_enabled,
             default_coding_tools_enabled=True,
+            browser_tools_enabled=_browser_tools_enabled(),
         )
 
     def mark_shutting_down(self) -> None:
@@ -169,7 +175,7 @@ class SDKRuntime:
                     'agent.error',
                     {'error': str(exc)},
                 )
-                raise
+                raise SDKRunError(str(exc)) from exc
         return runtime.info
 
     async def get_runtime_state(self, conversation_id: str) -> ConversationRuntimeState:
@@ -436,10 +442,11 @@ class _OfficialSDKAdapter:
     def _build_default_tools(self) -> Any:
         tools_mod = self._import_first('openhands.tools', 'openhands.sdk.tools')
         register_builtins = getattr(tools_mod, 'register_builtins_agents', None)
+        enable_browser = _browser_tools_enabled()
         if register_builtins is not None:
-            register_builtins(enable_browser=True)
+            register_builtins(enable_browser=enable_browser)
         get_default_tools = getattr(tools_mod, 'get_default_tools')
-        return get_default_tools(enable_browser=True, enable_sub_agents=True)
+        return get_default_tools(enable_browser=enable_browser, enable_sub_agents=True)
 
     def rebuild(self, runtime: RuntimeConversation) -> Any:
         request = StartConversationRequest(
@@ -580,3 +587,7 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _browser_tools_enabled() -> bool:
+    return os.getenv('MGHANDS_ENABLE_BROWSER_TOOLS', '').lower() in {'1', 'true', 'yes'}

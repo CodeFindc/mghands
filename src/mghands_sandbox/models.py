@@ -112,6 +112,7 @@ class SandboxRuntimeInfo(BaseModel):
     active_conversation_ids: list[str] = Field(default_factory=list)
     session_auth_enabled: bool = False
     default_coding_tools_enabled: bool = True
+    browser_tools_enabled: bool = False
 
 
 class ServerInfo(BaseModel):
@@ -123,6 +124,7 @@ class ServerInfo(BaseModel):
     supports_dynamic_mcp: bool = True
     supports_shutdown: bool = True
     default_coding_tools_enabled: bool = True
+    browser_tools_enabled: bool = False
     default_tool_sources: list[str] = Field(default_factory=list)
 
 

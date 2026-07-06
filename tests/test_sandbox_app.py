@@ -22,6 +22,7 @@ def test_sandbox_ready_and_server_info() -> None:
     assert info.status_code == 200
     assert info.json()['supports_dynamic_skills'] is True
     assert info.json()['default_coding_tools_enabled'] is True
+    assert info.json()['browser_tools_enabled'] is False
     assert any('get_default_tools' in item for item in info.json()['default_tool_sources'])
     assert 'POST /api/conversations/{conversation_id}/runtime' in info.json()['standard_endpoints']
 
@@ -32,6 +33,7 @@ def test_sandbox_runtime_info() -> None:
     assert response.status_code == 200
     assert response.json()['active_conversation_ids'] == []
     assert response.json()['default_coding_tools_enabled'] is True
+    assert response.json()['browser_tools_enabled'] is False
 
 
 def test_sandbox_start_requires_sdk_when_not_installed() -> None:
