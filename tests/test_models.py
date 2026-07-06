@@ -20,6 +20,14 @@ def test_llm_api_key_serializes_redacted() -> None:
     assert llm.model_dump(mode='json')['api_key'] == '**********'
 
 
+def test_llm_api_key_can_expose_for_runtime() -> None:
+    llm = LLMOverride(model='deepseek-chat', api_key=SecretStr('sk-test'))
+    assert (
+        llm.model_dump(mode='json', context={'expose_secrets': True})['api_key']
+        == 'sk-test'
+    )
+
+
 def test_redact_sensitive_nested_values() -> None:
     value = {'headers': {'Authorization': 'Bearer token'}, 'api_key': 'sk-test'}
     assert redact_sensitive(value) == {

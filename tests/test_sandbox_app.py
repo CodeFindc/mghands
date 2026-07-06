@@ -91,3 +91,4 @@ def test_sdk_adapter_prefixes_custom_openai_model(monkeypatch) -> None:
     )
 
     assert captured['model'] == 'openai/DeepSeek-V4-Flash-w8a8-mtp'
+    assert captured['api_key'] == 'sk-test'

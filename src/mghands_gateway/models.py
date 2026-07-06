@@ -3,7 +3,14 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    SerializationInfo,
+    field_serializer,
+    field_validator,
+)
 
 SESSION_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
 SENSITIVE_KEYS = {'api_key', 'apikey', 'authorization', 'cookie', 'token', 'secret'}
@@ -62,9 +69,13 @@ class LLMOverride(BaseModel):
     api_key: SecretStr | None = None
 
     @field_serializer('api_key')
-    def serialize_api_key(self, api_key: SecretStr | None) -> str | None:
+    def serialize_api_key(
+        self, api_key: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
         if api_key is None:
             return None
+        if info.context and info.context.get('expose_secrets'):
+            return api_key.get_secret_value()
         return '**********'
 
 

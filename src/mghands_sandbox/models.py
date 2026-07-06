@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, SecretStr, field_serializer
+from pydantic import BaseModel, Field, SecretStr, SerializationInfo, field_serializer
 
 
 def utc_now() -> datetime:
@@ -44,9 +44,13 @@ class LLMConfig(BaseModel):
     api_key: SecretStr | None = None
 
     @field_serializer('api_key')
-    def serialize_api_key(self, api_key: SecretStr | None) -> str | None:
+    def serialize_api_key(
+        self, api_key: SecretStr | None, info: SerializationInfo
+    ) -> str | None:
         if api_key is None:
             return None
+        if info.context and info.context.get('expose_secrets'):
+            return api_key.get_secret_value()
         return '**********'
 
 
