@@ -13,7 +13,7 @@ from mghands_sandbox.models import (
     Success,
     UpdateRuntimeRequest,
 )
-from mghands_sandbox.sdk_runtime import SDKRuntime, SDKUnavailableError
+from mghands_sandbox.sdk_runtime import SDKBuildError, SDKRuntime, SDKUnavailableError
 
 SESSION_KEYS = {
     value
@@ -89,6 +89,8 @@ async def start_conversation(request: StartConversationRequest):
     try:
         return await runtime.create_conversation(request)
     except SDKUnavailableError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except SDKBuildError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
 
 

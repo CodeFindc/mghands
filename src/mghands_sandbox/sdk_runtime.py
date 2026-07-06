@@ -24,6 +24,10 @@ class SDKUnavailableError(RuntimeError):
     pass
 
 
+class SDKBuildError(RuntimeError):
+    pass
+
+
 @dataclass
 class RuntimeConversation:
     info: ConversationInfo
@@ -95,9 +99,13 @@ class SDKRuntime:
             skills=list(request.skills),
             mcp_config=request.mcp_config,
         )
-        runtime.sdk_conversation = await asyncio.to_thread(
-            self._build_sdk_conversation, request, runtime
-        )
+        try:
+            runtime.sdk_conversation = await asyncio.to_thread(
+                self._build_sdk_conversation, request, runtime
+            )
+        except Exception as exc:
+            self._last_error = str(exc)
+            raise SDKBuildError(str(exc)) from exc
         async with self._lock:
             self._conversations[conversation_id] = runtime
         await self._append_event(
@@ -277,11 +285,8 @@ class _OfficialSDKAdapter:
         if conversation_cls is None:
             conversation_mod = importlib.import_module('openhands.sdk.conversation')
             conversation_cls = getattr(conversation_mod, 'Conversation')
-        kwargs = self._conversation_kwargs(request, runtime)
-        try:
-            return conversation_cls(**kwargs)
-        except TypeError:
-            return conversation_cls()
+        agent = self._build_default_agent(request, runtime)
+        return self._instantiate_conversation(conversation_cls, agent)
 
     def _build_official_conversation(
         self, request: StartConversationRequest, runtime: RuntimeConversation
@@ -315,11 +320,7 @@ class _OfficialSDKAdapter:
             agent_settings_cls = getattr(settings_mod, 'OpenHandsAgentSettings')
             conversation_settings_cls = getattr(settings_mod, 'ConversationSettings')
 
-            register_builtins = getattr(tools_mod, 'register_builtins_agents', None)
-            if register_builtins is not None:
-                register_builtins(enable_browser=True)
-            get_default_tools = getattr(tools_mod, 'get_default_tools')
-            tools = get_default_tools(enable_browser=True, enable_sub_agents=True)
+            tools = self._build_default_tools()
 
             agent_definitions = []
             if subagent_mod is not None:
@@ -363,16 +364,82 @@ class _OfficialSDKAdapter:
                 start_request = conversation_settings.create_request(
                     start_request_cls, agent=agent
                 )
-                try:
-                    return conversation_cls(start_request)
-                except TypeError:
-                    return conversation_cls(**start_request.model_dump())
-            try:
-                return conversation_cls(settings=conversation_settings, agent=agent)
-            except TypeError:
-                return conversation_cls(**self._conversation_kwargs(request, runtime))
+                return self._instantiate_conversation(
+                    conversation_cls,
+                    agent,
+                    conversation_settings=conversation_settings,
+                    start_request=start_request,
+                )
+            return self._instantiate_conversation(
+                conversation_cls,
+                agent,
+                conversation_settings=conversation_settings,
+            )
         except Exception:
             return None
+
+    def _instantiate_conversation(
+        self,
+        conversation_cls: Any,
+        agent: Any,
+        *,
+        conversation_settings: Any = None,
+        start_request: Any = None,
+    ) -> Any:
+        attempts = [
+            lambda: conversation_cls(agent=agent),
+            lambda: conversation_cls(agent),
+        ]
+        if conversation_settings is not None:
+            attempts.extend(
+                [
+                    lambda: conversation_cls(agent=agent, settings=conversation_settings),
+                    lambda: conversation_cls(agent, conversation_settings),
+                ]
+            )
+        if start_request is not None:
+            attempts.extend(
+                [
+                    lambda: conversation_cls(agent=agent, start_request=start_request),
+                    lambda: conversation_cls(agent, start_request),
+                ]
+            )
+        last_error: Exception | None = None
+        for attempt in attempts:
+            try:
+                return attempt()
+            except TypeError as exc:
+                last_error = exc
+        raise SDKBuildError(f'Failed to instantiate SDK Conversation: {last_error}')
+
+    def _build_default_agent(
+        self, request: StartConversationRequest, runtime: RuntimeConversation
+    ) -> Any:
+        sdk = importlib.import_module('openhands.sdk')
+        settings_mod = importlib.import_module('openhands.sdk.settings')
+        agent_context_cls = getattr(sdk, 'AgentContext')
+        agent_settings_cls = getattr(settings_mod, 'OpenHandsAgentSettings')
+        agent_context = agent_context_cls(skills=self._build_skills(runtime.skills))
+        agent_kwargs: dict[str, Any] = {
+            'tools': self._build_default_tools(),
+            'agent_context': agent_context,
+            'enable_sub_agents': True,
+        }
+        llm = self._build_llm(request.llm)
+        if llm is not None:
+            agent_kwargs['llm'] = llm
+        mcp_config = self._build_mcp_config(runtime.mcp_config)
+        if mcp_config is not None:
+            agent_kwargs['mcp_config'] = mcp_config
+        return agent_settings_cls(**agent_kwargs).create_agent()
+
+    def _build_default_tools(self) -> Any:
+        tools_mod = self._import_first('openhands.tools', 'openhands.sdk.tools')
+        register_builtins = getattr(tools_mod, 'register_builtins_agents', None)
+        if register_builtins is not None:
+            register_builtins(enable_browser=True)
+        get_default_tools = getattr(tools_mod, 'get_default_tools')
+        return get_default_tools(enable_browser=True, enable_sub_agents=True)
 
     def rebuild(self, runtime: RuntimeConversation) -> Any:
         request = StartConversationRequest(
