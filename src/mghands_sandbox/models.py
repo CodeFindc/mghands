@@ -38,6 +38,7 @@ class MessageRequest(BaseModel):
 
 
 class LLMConfig(BaseModel):
+    provider: str | None = None
     model: str | None = None
     base_url: str | None = None
     api_key: SecretStr | None = None

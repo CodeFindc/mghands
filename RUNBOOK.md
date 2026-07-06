@@ -316,12 +316,14 @@ curl -X POST http://127.0.0.1:8080/api/v1/sessions/tenant-a-task-001/execute `
 ```powershell
 curl -X POST http://127.0.0.1:8080/api/v1/sessions/tenant-a-task-001/execute `
   -H "Content-Type: application/json" `
-  -d '{"task":"输出一句 hello","llm":{"model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-..."},"stream":true}'
+  -d '{"task":"输出一句 hello","llm":{"provider":"openai","model":"deepseek-chat","base_url":"https://api.deepseek.com/v1","api_key":"sk-..."},"stream":true}'
 ```
 
 说明：
 
 - `llm.model`、`llm.api_key` 和 `llm.base_url` 会传给容器内 SDK runtime。
+- OpenAI-compatible 自定义接口建议传 `llm.provider="openai"`，或直接传 `llm.model="openai/<模型名>"`。
+- 如果传了 `base_url` 且模型名没有 provider 前缀，容器会自动补成 `openai/<模型名>`，避免 LiteLLM 报 `LLM Provider NOT provided`。
 - Gateway 不会把 `api_key` 写入 session 映射、history、SSE 或错误响应。
 
 ### 动态注入 Skills 和 MCP

@@ -495,6 +495,10 @@ class _OfficialSDKAdapter:
         llm_mod = importlib.import_module('openhands.sdk.llm')
         llm_cls = getattr(llm_mod, 'LLM')
         payload = llm.model_dump(exclude_none=True, context={'expose_secrets': True})
+        provider = payload.pop('provider', None)
+        model = payload.get('model')
+        if model and '/' not in model and payload.get('base_url'):
+            payload['model'] = f'{provider or "openai"}/{model}'
         return llm_cls(**payload)
 
     def _build_workspace(self, working_dir: str) -> Any:

@@ -14,3 +14,15 @@ def test_start_conversation_payload_includes_dynamic_runtime_config() -> None:
     assert payload['llm']['model'] == 'gpt-4o-mini'
     assert payload['skills'][0]['name'] == 'testing'
     assert payload['mcp_config']['mcpServers']['local']['command'] == 'echo'
+
+
+def test_start_conversation_payload_forwards_llm_provider() -> None:
+    payload = _start_conversation_payload(
+        'hello',
+        LLMOverride(provider='openai', model='custom-model'),
+        None,
+        None,
+    )
+
+    assert payload['llm']['provider'] == 'openai'
+    assert payload['llm']['model'] == 'custom-model'

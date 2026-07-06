@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
 
 from mghands_sandbox.app import app
+from mghands_sandbox.models import LLMConfig
+from mghands_sandbox.sdk_runtime import _OfficialSDKAdapter
 
 
 def test_sandbox_alive() -> None:
@@ -62,3 +64,30 @@ def test_sandbox_runtime_payload_models_validate() -> None:
         },
     )
     assert response.status_code == 404
+
+
+def test_sdk_adapter_prefixes_custom_openai_model(monkeypatch) -> None:
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class FakeModule:
+        LLM = FakeLLM
+
+    def fake_import_module(name):
+        assert name == 'openhands.sdk.llm'
+        return FakeModule
+
+    monkeypatch.setattr('mghands_sandbox.sdk_runtime.importlib.import_module', fake_import_module)
+
+    _OfficialSDKAdapter()._build_llm(
+        LLMConfig(
+            model='DeepSeek-V4-Flash-w8a8-mtp',
+            base_url='http://192.168.110.209:3000/v1',
+            api_key='sk-test',
+        )
+    )
+
+    assert captured['model'] == 'openai/DeepSeek-V4-Flash-w8a8-mtp'

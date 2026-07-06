@@ -193,6 +193,8 @@ def _start_conversation_payload(
     }
     if llm:
         llm_payload: dict[str, Any] = {}
+        if llm.provider:
+            llm_payload['provider'] = llm.provider
         if llm.model:
             llm_payload['model'] = llm.model
         if llm.base_url:
