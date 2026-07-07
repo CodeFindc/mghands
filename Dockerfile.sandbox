@@ -10,6 +10,7 @@ COPY pyproject.toml ./
 COPY src ./src
 
 RUN python -m pip install --no-cache-dir \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple \
     'fastapi>=0.115.0' \
     'httpx>=0.27.0' \
     'openhands-agent-server==1.29.0' \
