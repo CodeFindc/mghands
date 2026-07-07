@@ -17,7 +17,7 @@ RUN python -m pip install --no-cache-dir \
     'openhands-sdk==1.29.0' \
     'openhands-tools==1.29.0' \
     'pydantic-settings==2.14.0' \
-    'uvicorn[standard]==0.31.1' \
+    'uvicorn[standard]==0.35.0' \
     'browser-use==0.11.13' \
     'fastmcp==3.4.0' \
     'fastmcp-slim[client,server]==3.4.0' \
