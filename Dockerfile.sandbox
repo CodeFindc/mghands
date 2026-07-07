@@ -8,8 +8,7 @@ WORKDIR /opt/mghands
 COPY pyproject.toml ./
 COPY src ./src
 
-RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir .
+RUN python -m pip install --no-cache-dir .
 
 RUN mkdir -p /workspace
 
