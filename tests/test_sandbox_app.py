@@ -1,8 +1,8 @@
 from fastapi.testclient import TestClient
 
 from mghands_sandbox.app import app
-from mghands_sandbox.models import LLMConfig
-from mghands_sandbox.sdk_runtime import _OfficialSDKAdapter
+from mghands_sandbox.models import ConversationInfo, LLMConfig, StartConversationRequest
+from mghands_sandbox.sdk_runtime import RuntimeConversation, _OfficialSDKAdapter
 
 
 def test_sandbox_alive() -> None:
@@ -148,3 +148,81 @@ def test_sdk_adapter_keeps_bare_constructor_fallback() -> None:
     assert len(calls) == 5
     assert conversation.args == ()
     assert conversation.kwargs == {'agent': 'agent'}
+
+
+def test_sdk_adapter_does_not_pass_initial_message_to_conversation_settings(monkeypatch) -> None:
+    captured = {}
+
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    class FakeAgentContext:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeAgentSettings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def create_agent(self):
+            return 'agent'
+
+    class FakeConversationSettings:
+        def __init__(self, **kwargs):
+            captured['conversation_settings'] = kwargs
+
+        def create_request(self, request_cls, agent):
+            return request_cls(agent=agent)
+
+    class FakeStartConversationRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeSDKModule:
+        Conversation = FakeConversation
+        AgentContext = FakeAgentContext
+
+    class FakeSettingsModule:
+        OpenHandsAgentSettings = FakeAgentSettings
+        ConversationSettings = FakeConversationSettings
+
+    class FakeToolsModule:
+        @staticmethod
+        def register_builtins_agents(enable_browser=False):
+            return None
+
+        @staticmethod
+        def get_default_tools(enable_browser=False, enable_sub_agents=True):
+            return ['tool']
+
+    class FakeAgentServerModelsModule:
+        StartConversationRequest = FakeStartConversationRequest
+
+    def fake_import_module(name):
+        modules = {
+            'openhands.sdk': FakeSDKModule,
+            'openhands.sdk.settings': FakeSettingsModule,
+            'openhands.tools': FakeToolsModule,
+            'openhands.agent_server.models': FakeAgentServerModelsModule,
+        }
+        if name in modules:
+            return modules[name]
+        raise ModuleNotFoundError(name)
+
+    monkeypatch.setattr('mghands_sandbox.sdk_runtime.importlib.import_module', fake_import_module)
+
+    request = StartConversationRequest(
+        initial_message={
+            'role': 'user',
+            'content': [{'type': 'text', 'text': 'create hello.txt'}],
+            'run': True,
+        }
+    )
+    runtime = RuntimeConversation(info=ConversationInfo())
+
+    conversation = _OfficialSDKAdapter()._build_official_conversation(request, runtime)
+
+    assert conversation.kwargs == {'agent': 'agent', 'start_request': conversation.kwargs['start_request']}
+    assert 'initial_message' not in captured['conversation_settings']

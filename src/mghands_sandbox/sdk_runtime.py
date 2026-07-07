@@ -354,7 +354,6 @@ class _OfficialSDKAdapter:
             conv_kwargs: dict[str, Any] = {
                 'agent_settings': agent_settings,
                 'conversation_id': request.conversation_id or runtime.info.id,
-                'initial_message': self._build_sdk_message(request.initial_message),
                 'agent_definitions': agent_definitions,
             }
             if workspace is not None:
