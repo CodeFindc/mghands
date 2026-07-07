@@ -392,10 +392,13 @@ class _OfficialSDKAdapter:
         conversation_settings: Any = None,
         start_request: Any = None,
     ) -> Any:
-        attempts = [
-            lambda: conversation_cls(agent=agent),
-            lambda: conversation_cls(agent),
-        ]
+        if start_request is not None:
+            attempts = [
+                lambda: conversation_cls(agent=agent, start_request=start_request),
+                lambda: conversation_cls(agent, start_request),
+            ]
+        else:
+            attempts = []
         if conversation_settings is not None:
             attempts.extend(
                 [
@@ -403,13 +406,12 @@ class _OfficialSDKAdapter:
                     lambda: conversation_cls(agent, conversation_settings),
                 ]
             )
-        if start_request is not None:
-            attempts.extend(
-                [
-                    lambda: conversation_cls(agent=agent, start_request=start_request),
-                    lambda: conversation_cls(agent, start_request),
-                ]
-            )
+        attempts.extend(
+            [
+                lambda: conversation_cls(agent=agent),
+                lambda: conversation_cls(agent),
+            ]
+        )
         last_error: Exception | None = None
         for attempt in attempts:
             try:

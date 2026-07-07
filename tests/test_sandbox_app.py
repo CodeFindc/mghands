@@ -92,3 +92,59 @@ def test_sdk_adapter_prefixes_custom_openai_model(monkeypatch) -> None:
 
     assert captured['model'] == 'openai/DeepSeek-V4-Flash-w8a8-mtp'
     assert captured['api_key'] == 'sk-test'
+
+
+def test_sdk_adapter_prefers_start_request_constructor() -> None:
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    conversation = _OfficialSDKAdapter()._instantiate_conversation(
+        FakeConversation,
+        agent='agent',
+        conversation_settings='settings',
+        start_request='start',
+    )
+
+    assert conversation.args == ()
+    assert conversation.kwargs == {'agent': 'agent', 'start_request': 'start'}
+
+
+def test_sdk_adapter_prefers_settings_constructor_before_bare() -> None:
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    conversation = _OfficialSDKAdapter()._instantiate_conversation(
+        FakeConversation,
+        agent='agent',
+        conversation_settings='settings',
+    )
+
+    assert conversation.args == ()
+    assert conversation.kwargs == {'agent': 'agent', 'settings': 'settings'}
+
+
+def test_sdk_adapter_keeps_bare_constructor_fallback() -> None:
+    calls = []
+
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            if 'start_request' in kwargs or 'settings' in kwargs or len(args) == 2:
+                raise TypeError('unsupported constructor')
+            self.args = args
+            self.kwargs = kwargs
+
+    conversation = _OfficialSDKAdapter()._instantiate_conversation(
+        FakeConversation,
+        agent='agent',
+        conversation_settings='settings',
+        start_request='start',
+    )
+
+    assert len(calls) == 5
+    assert conversation.args == ()
+    assert conversation.kwargs == {'agent': 'agent'}
