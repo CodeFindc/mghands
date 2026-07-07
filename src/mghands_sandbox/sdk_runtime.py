@@ -338,6 +338,7 @@ class _OfficialSDKAdapter:
             llm = self._build_llm(request.llm)
             workspace = self._build_workspace(request.working_dir)
             mcp_config = self._build_mcp_config(runtime.mcp_config)
+            callbacks = [self._build_event_callback(runtime)]
 
             agent_kwargs: dict[str, Any] = {
                 'tools': tools,
@@ -350,6 +351,13 @@ class _OfficialSDKAdapter:
                 agent_kwargs['mcp_config'] = mcp_config
             agent_settings = agent_settings_cls(**agent_kwargs)
             agent = agent_settings.create_agent()
+
+            direct_kwargs: dict[str, Any] = {
+                'conversation_id': request.conversation_id or runtime.info.id,
+                'callbacks': callbacks,
+            }
+            if workspace is not None:
+                direct_kwargs['workspace'] = workspace
 
             conv_kwargs: dict[str, Any] = {
                 'agent_settings': agent_settings,
@@ -372,12 +380,14 @@ class _OfficialSDKAdapter:
                 return self._instantiate_conversation(
                     conversation_cls,
                     agent,
+                    direct_kwargs=direct_kwargs,
                     conversation_settings=conversation_settings,
                     start_request=start_request,
                 )
             return self._instantiate_conversation(
                 conversation_cls,
                 agent,
+                direct_kwargs=direct_kwargs,
                 conversation_settings=conversation_settings,
             )
         except Exception:
@@ -388,16 +398,21 @@ class _OfficialSDKAdapter:
         conversation_cls: Any,
         agent: Any,
         *,
+        direct_kwargs: dict[str, Any] | None = None,
         conversation_settings: Any = None,
         start_request: Any = None,
     ) -> Any:
-        if start_request is not None:
-            attempts = [
-                lambda: conversation_cls(agent=agent, start_request=start_request),
-                lambda: conversation_cls(agent, start_request),
-            ]
+        if direct_kwargs is not None:
+            attempts = [lambda: conversation_cls(agent=agent, **direct_kwargs)]
         else:
             attempts = []
+        if start_request is not None:
+            attempts.extend(
+                [
+                    lambda: conversation_cls(agent=agent, start_request=start_request),
+                    lambda: conversation_cls(agent, start_request),
+                ]
+            )
         if conversation_settings is not None:
             attempts.extend(
                 [
@@ -439,6 +454,17 @@ class _OfficialSDKAdapter:
         if mcp_config is not None:
             agent_kwargs['mcp_config'] = mcp_config
         return agent_settings_cls(**agent_kwargs).create_agent()
+
+    def _build_event_callback(self, runtime: RuntimeConversation):
+        def on_event(event: Any) -> None:
+            runtime.events.append(
+                EventRecord(
+                    kind=f'openhands.{event.__class__.__name__}',
+                    data=_redact(_sdk_event_payload(event)),
+                )
+            )
+
+        return on_event
 
     def _build_default_tools(self) -> Any:
         tools_mod = self._import_first('openhands.tools', 'openhands.sdk.tools')
@@ -581,6 +607,28 @@ def _jsonable(value: Any) -> Any:
         return value
     except TypeError:
         return str(value)
+
+
+def _sdk_event_payload(event: Any) -> dict[str, Any]:
+    event_type = event.__class__.__name__
+    if hasattr(event, 'model_dump'):
+        raw = event.model_dump(mode='json')
+    else:
+        raw = str(event)
+    payload = {
+        'event_type': event_type,
+        'source': getattr(event, 'source', None),
+        'sdk_event_id': getattr(event, 'id', None),
+        'sdk_timestamp': getattr(event, 'timestamp', None),
+        'raw': raw,
+    }
+    try:
+        visualize = getattr(event, 'visualize', None)
+        if visualize is not None:
+            payload['preview'] = getattr(visualize, 'plain', str(visualize))
+    except Exception:
+        pass
+    return payload
 
 
 def _redact(value: Any) -> Any:

@@ -7,7 +7,7 @@ from mghands_sandbox.models import (
     MessageRequest,
     StartConversationRequest,
 )
-from mghands_sandbox.sdk_runtime import RuntimeConversation, _OfficialSDKAdapter
+from mghands_sandbox.sdk_runtime import RuntimeConversation, _OfficialSDKAdapter, _sdk_event_payload
 
 
 def test_sandbox_alive() -> None:
@@ -116,6 +116,28 @@ def test_sdk_adapter_prefers_start_request_constructor() -> None:
     assert conversation.kwargs == {'agent': 'agent', 'start_request': 'start'}
 
 
+def test_sdk_adapter_prefers_direct_constructor_kwargs() -> None:
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    conversation = _OfficialSDKAdapter()._instantiate_conversation(
+        FakeConversation,
+        agent='agent',
+        direct_kwargs={'workspace': '/workspace', 'callbacks': ['callback']},
+        conversation_settings='settings',
+        start_request='start',
+    )
+
+    assert conversation.args == ()
+    assert conversation.kwargs == {
+        'agent': 'agent',
+        'workspace': '/workspace',
+        'callbacks': ['callback'],
+    }
+
+
 def test_sdk_adapter_prefers_settings_constructor_before_bare() -> None:
     class FakeConversation:
         def __init__(self, *args, **kwargs):
@@ -138,7 +160,12 @@ def test_sdk_adapter_keeps_bare_constructor_fallback() -> None:
     class FakeConversation:
         def __init__(self, *args, **kwargs):
             calls.append((args, kwargs))
-            if 'start_request' in kwargs or 'settings' in kwargs or len(args) == 2:
+            if (
+                'callbacks' in kwargs
+                or 'start_request' in kwargs
+                or 'settings' in kwargs
+                or len(args) == 2
+            ):
                 raise TypeError('unsupported constructor')
             self.args = args
             self.kwargs = kwargs
@@ -146,11 +173,12 @@ def test_sdk_adapter_keeps_bare_constructor_fallback() -> None:
     conversation = _OfficialSDKAdapter()._instantiate_conversation(
         FakeConversation,
         agent='agent',
+        direct_kwargs={'callbacks': ['callback']},
         conversation_settings='settings',
         start_request='start',
     )
 
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert conversation.args == ()
     assert conversation.kwargs == {'agent': 'agent'}
 
@@ -229,8 +257,57 @@ def test_sdk_adapter_does_not_pass_initial_message_to_conversation_settings(monk
 
     conversation = _OfficialSDKAdapter()._build_official_conversation(request, runtime)
 
-    assert conversation.kwargs == {'agent': 'agent', 'start_request': conversation.kwargs['start_request']}
+    assert conversation.kwargs['agent'] == 'agent'
+    assert callable(conversation.kwargs['callbacks'][0])
+    assert conversation.kwargs['conversation_id'] == runtime.info.id
     assert 'initial_message' not in captured['conversation_settings']
+
+
+def test_sdk_adapter_event_callback_records_openhands_events() -> None:
+    class FakeVisualize:
+        plain = 'Tool: file_editor\nResult: created file'
+
+    class FakeEvent:
+        id = 'sdk-event-1'
+        timestamp = '2026-07-07T00:00:00'
+        source = 'agent'
+        visualize = FakeVisualize()
+
+        def model_dump(self, mode='json'):
+            return {'id': self.id, 'source': self.source, 'tool_name': 'file_editor'}
+
+    runtime = RuntimeConversation(info=ConversationInfo())
+    callback = _OfficialSDKAdapter()._build_event_callback(runtime)
+
+    callback(FakeEvent())
+
+    assert runtime.events[0].kind == 'openhands.FakeEvent'
+    assert runtime.events[0].data == {
+        'event_type': 'FakeEvent',
+        'source': 'agent',
+        'sdk_event_id': 'sdk-event-1',
+        'sdk_timestamp': '2026-07-07T00:00:00',
+        'raw': {'id': 'sdk-event-1', 'source': 'agent', 'tool_name': 'file_editor'},
+        'preview': 'Tool: file_editor\nResult: created file',
+    }
+
+
+def test_sdk_event_payload_handles_non_pydantic_events() -> None:
+    class FakeEvent:
+        id = 'sdk-event-2'
+        timestamp = '2026-07-07T00:00:01'
+        source = 'environment'
+
+        def __str__(self):
+            return 'plain event'
+
+    assert _sdk_event_payload(FakeEvent()) == {
+        'event_type': 'FakeEvent',
+        'source': 'environment',
+        'sdk_event_id': 'sdk-event-2',
+        'sdk_timestamp': '2026-07-07T00:00:01',
+        'raw': 'plain event',
+    }
 
 
 def test_sdk_adapter_sends_prompt_before_running_conversation() -> None:
