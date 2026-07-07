@@ -467,6 +467,10 @@ class _OfficialSDKAdapter:
         if run is None:
             raise RuntimeError('SDK conversation does not expose run()')
         prompt = '\n'.join(item.text for item in message.content)
+        send_message = getattr(conversation, 'send_message', None)
+        if send_message is not None:
+            send_message(prompt)
+            return run()
         try:
             return run(prompt)
         except TypeError:

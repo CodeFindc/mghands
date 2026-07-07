@@ -1,7 +1,12 @@
 from fastapi.testclient import TestClient
 
 from mghands_sandbox.app import app
-from mghands_sandbox.models import ConversationInfo, LLMConfig, StartConversationRequest
+from mghands_sandbox.models import (
+    ConversationInfo,
+    LLMConfig,
+    MessageRequest,
+    StartConversationRequest,
+)
 from mghands_sandbox.sdk_runtime import RuntimeConversation, _OfficialSDKAdapter
 
 
@@ -226,3 +231,46 @@ def test_sdk_adapter_does_not_pass_initial_message_to_conversation_settings(monk
 
     assert conversation.kwargs == {'agent': 'agent', 'start_request': conversation.kwargs['start_request']}
     assert 'initial_message' not in captured['conversation_settings']
+
+
+def test_sdk_adapter_sends_prompt_before_running_conversation() -> None:
+    calls = []
+
+    class FakeConversation:
+        def send_message(self, message):
+            calls.append(('send_message', message))
+
+        def run(self):
+            calls.append(('run', None))
+            return 'done'
+
+    runtime = RuntimeConversation(info=ConversationInfo(), sdk_conversation=FakeConversation())
+    message = MessageRequest(
+        content=[{'type': 'text', 'text': 'create hello.txt'}],
+        run=True,
+    )
+
+    result = _OfficialSDKAdapter().run(runtime, message)
+
+    assert result == 'done'
+    assert calls == [('send_message', 'create hello.txt'), ('run', None)]
+
+
+def test_sdk_adapter_falls_back_to_prompt_run_without_send_message() -> None:
+    calls = []
+
+    class FakeConversation:
+        def run(self, prompt):
+            calls.append(('run', prompt))
+            return 'done'
+
+    runtime = RuntimeConversation(info=ConversationInfo(), sdk_conversation=FakeConversation())
+    message = MessageRequest(
+        content=[{'type': 'text', 'text': 'create hello.txt'}],
+        run=True,
+    )
+
+    result = _OfficialSDKAdapter().run(runtime, message)
+
+    assert result == 'done'
+    assert calls == [('run', 'create hello.txt')]
