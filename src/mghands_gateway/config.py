@@ -1,12 +1,18 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix='MGHANDS_', env_file='.env')
+
+    data_root: Path = Field(
+        default=Path('.mghands'),
+        description='Gateway-managed data root for database, users, projects, and shared skills.',
+    )
 
     sandbox_image: str = Field(
         default='docker.all-hands.dev/all-hands-ai/runtime:1.29.0',
@@ -52,6 +58,22 @@ class Settings(BaseSettings):
         default=Path('.mghands') / 'sessions.sqlite3',
         description='SQLite database path for durable session mapping.',
     )
+    shared_skills_root: Path | None = Field(
+        default=None,
+        description='Admin-managed root containing shared skill directories.',
+    )
+    default_project_skills: list[str] = Field(
+        default_factory=list,
+        description='Frontend default checked shared skill names for new projects.',
+    )
+    auth_access_token_ttl_seconds: int = Field(
+        default=2592000,
+        description='Opaque access token TTL in seconds.',
+    )
+    auth_public_registration_enabled: bool = False
+    auth_registered_user_default_enabled: bool = True
+    bootstrap_admin_username: str | None = None
+    bootstrap_admin_password: SecretStr | None = None
     allow_non_docker_sandbox: bool = Field(
         default=False,
         description='Allow non-Docker sandbox requests for local development only.',
@@ -64,6 +86,23 @@ class Settings(BaseSettings):
     sse_poll_seconds: float = 1.0
     sse_heartbeat_seconds: float = 15.0
     sse_idle_timeout_seconds: float = 300.0
+
+    @field_validator('default_project_skills', mode='before')
+    @classmethod
+    def parse_default_project_skills(cls, value: Any) -> list[str]:
+        if value is None or value == '':
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(',') if item.strip()]
+        return list(value)
+
+    @field_validator('shared_skills_root', mode='after')
+    @classmethod
+    def default_shared_skills_root(cls, value: Path | None, info) -> Path:
+        if value is not None:
+            return value
+        data_root = info.data.get('data_root') or Path('.mghands')
+        return Path(data_root) / 'shared_skills'
 
 
 @lru_cache

@@ -1,30 +1,59 @@
 import asyncio
 import json
+from pathlib import Path
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
+from mghands_gateway.auth import (
+    generate_access_token,
+    hash_password,
+    hash_token,
+    token_expiry,
+    verify_password,
+)
 from mghands_gateway.config import Settings, get_settings
 from mghands_gateway.agent_client import AgentServerClient
 from mghands_gateway.models import (
+    AuthTokenRecord,
+    CreateProjectRequest,
+    CreateProjectSessionRequest,
     CreateSessionRequest,
+    CreateUserRequest,
     ExecuteRequest,
     ExecuteResponse,
     HistoryResponse,
+    InstallProjectSkillRequest,
+    LoginRequest,
+    LoginResponse,
+    ProjectRecord,
+    ProjectResponse,
+    ProjectSkillRecord,
+    ProjectSkillResponse,
+    ProjectStatus,
+    RegisterRequest,
+    ResetPasswordRequest,
+    RuntimeUpdateRequest,
     SessionRecord,
     SessionResponse,
     SessionStatus,
-    RuntimeUpdateRequest,
     SandboxType,
     TerminalEvent,
+    UpdateUserRequest,
+    UserRecord,
+    UserResponse,
+    UserRole,
+    new_id,
+    utc_now,
     validate_session_id,
 )
 from mghands_gateway.sandbox_backend import DockerSandboxBackend
 from mghands_gateway.session_store import SessionStore
+from mghands_gateway.skills import SkillManager
 
 
 def get_store(settings: Annotated[Settings, Depends(get_settings)]) -> SessionStore:
@@ -44,9 +73,48 @@ def get_sandbox_backend(
     return DockerSandboxBackend(settings, agent_client)
 
 
+def get_skill_manager(settings: Annotated[Settings, Depends(get_settings)]) -> SkillManager:
+    return SkillManager(settings.shared_skills_root or settings.data_root / 'shared_skills', settings.sandbox_workspace_mount_path)
+
+
+async def _require_auth_with_token(
+    store: Annotated[SessionStore, Depends(get_store)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> tuple[UserRecord, AuthTokenRecord]:
+    if not authorization or not authorization.lower().startswith('bearer '):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'missing bearer token')
+    token_value = authorization.split(' ', 1)[1].strip()
+    token = await store.get_token_by_hash(hash_token(token_value))
+    if token is None or token.revoked_at is not None or token.expires_at <= utc_now():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid or expired token')
+    user = await store.get_user(token.user_id)
+    if user is None or not user.enabled:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid or disabled user')
+    await store.touch_token(token.token_id)
+    return user, token
+
+
+async def _require_auth(
+    auth: Annotated[tuple[UserRecord, AuthTokenRecord], Depends(_require_auth_with_token)],
+) -> UserRecord:
+    user, _token = auth
+    return user
+
+
+async def _require_admin(
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+) -> UserRecord:
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'admin role required')
+    return current_user
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await SessionStore(get_settings().database_path).init()
+    settings = get_settings()
+    store = SessionStore(settings.database_path)
+    await store.init()
+    await _bootstrap_admin(settings, store)
     yield
 
 
@@ -62,57 +130,275 @@ async def health() -> dict[str, str]:
     return {'status': 'ok'}
 
 
-@app.post('/api/v1/sessions', response_model=SessionResponse, status_code=201)
-async def create_session(
-    request: CreateSessionRequest,
+@app.post('/api/v1/auth/register', response_model=UserResponse, status_code=201)
+async def register(
+    request: RegisterRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> UserResponse:
+    if not settings.auth_public_registration_enabled:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'public registration is disabled')
+    user = UserRecord(
+        username=request.username,
+        password_hash=hash_password(request.password),
+        role=UserRole.USER,
+        enabled=settings.auth_registered_user_default_enabled,
+    )
+    try:
+        return UserResponse.from_record(await store.create_user(user))
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, 'username already exists') from exc
+
+
+@app.post('/api/v1/auth/login', response_model=LoginResponse)
+async def login(
+    request: LoginRequest,
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> LoginResponse:
+    user = await store.get_user_by_username(request.username)
+    if user is None or not user.enabled or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid username or password')
+    access_token = generate_access_token()
+    expires_at = token_expiry(settings.auth_access_token_ttl_seconds)
+    await store.create_token(
+        AuthTokenRecord(
+            user_id=user.user_id,
+            token_hash=hash_token(access_token),
+            expires_at=expires_at,
+        )
+    )
+    return LoginResponse(access_token=access_token, expires_at=expires_at)
+
+
+@app.post('/api/v1/auth/logout')
+async def logout(
+    auth: Annotated[tuple[UserRecord, AuthTokenRecord], Depends(_require_auth_with_token)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> dict[str, str]:
+    _user, token = auth
+    await store.revoke_token(token.token_id)
+    return {'status': 'ok'}
+
+
+@app.get('/api/v1/me', response_model=UserResponse)
+async def me(current_user: Annotated[UserRecord, Depends(_require_auth)]) -> UserResponse:
+    return UserResponse.from_record(current_user)
+
+
+@app.get('/api/v1/admin/users', response_model=list[UserResponse])
+async def list_users(
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> list[UserResponse]:
+    return [UserResponse.from_record(user) for user in await store.list_users()]
+
+
+@app.post('/api/v1/admin/users', response_model=UserResponse, status_code=201)
+async def create_user(
+    request: CreateUserRequest,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> UserResponse:
+    user = UserRecord(
+        username=request.username,
+        password_hash=hash_password(request.password),
+        role=request.role,
+        enabled=request.enabled,
+    )
+    try:
+        return UserResponse.from_record(await store.create_user(user))
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, 'username already exists') from exc
+
+
+@app.patch('/api/v1/admin/users/{user_id}', response_model=UserResponse)
+async def update_user(
+    user_id: str,
+    request: UpdateUserRequest,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> UserResponse:
+    user = await store.get_user(user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'user not found')
+    if request.enabled is not None:
+        user.enabled = request.enabled
+    if request.role is not None:
+        user.role = request.role
+    return UserResponse.from_record(await store.update_user(user))
+
+
+@app.post('/api/v1/admin/users/{user_id}/password', response_model=UserResponse)
+async def reset_password(
+    user_id: str,
+    request: ResetPasswordRequest,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> UserResponse:
+    user = await store.get_user(user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'user not found')
+    user.password_hash = hash_password(request.password)
+    return UserResponse.from_record(await store.update_user(user))
+
+
+@app.get('/api/v1/skills/catalog')
+async def skill_catalog(
+    _user: Annotated[UserRecord, Depends(_require_auth)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    return {
+        'default_project_skills': settings.default_project_skills,
+        'items': [item.model_dump(mode='json') for item in manager.catalog()],
+    }
+
+
+@app.post('/api/v1/projects', response_model=ProjectResponse, status_code=201)
+async def create_project(
+    request: CreateProjectRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> ProjectResponse:
+    project = await _create_project_record(store, settings, current_user.user_id, request.name)
+    for skill_name in request.skill_names:
+        installed = _install_skill_or_http(manager, skill_name, project)
+        await store.upsert_project_skill(installed)
+    return ProjectResponse.from_record(project)
+
+
+@app.get('/api/v1/projects', response_model=list[ProjectResponse])
+async def list_projects(
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> list[ProjectResponse]:
+    return [ProjectResponse.from_record(project) for project in await store.list_projects(current_user.user_id)]
+
+
+@app.get('/api/v1/projects/{project_id}', response_model=ProjectResponse)
+async def get_project(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> ProjectResponse:
+    project = await _get_project_or_404(store, project_id, current_user)
+    return ProjectResponse.from_record(project)
+
+
+@app.delete('/api/v1/projects/{project_id}', response_model=ProjectResponse)
+async def delete_project(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> ProjectResponse:
+    project = await _get_project_or_404(store, project_id, current_user)
+    project.status = ProjectStatus.DELETED
+    return ProjectResponse.from_record(await store.save_project(project))
+
+
+@app.post('/api/v1/projects/{project_id}/sessions', response_model=SessionResponse, status_code=201)
+async def create_project_session(
+    project_id: str,
+    request: CreateProjectSessionRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     settings: Annotated[Settings, Depends(get_settings)],
     store: Annotated[SessionStore, Depends(get_store)],
     sandbox_backend: Annotated[DockerSandboxBackend, Depends(get_sandbox_backend)],
 ) -> SessionResponse:
-    if request.sandbox_type != SandboxType.DOCKER and not settings.allow_non_docker_sandbox:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            'Only docker sandbox sessions are allowed by default; set MGHANDS_ALLOW_NON_DOCKER_SANDBOX=true for local development only.',
+    project = await _get_project_or_404(store, project_id, current_user)
+    session_request = CreateSessionRequest(
+        session_id=request.session_id,
+        project_id=project.project_id,
+        sandbox_type=request.sandbox_type,
+        workspace_policy=request.workspace_policy,
+    )
+    return await _create_session_for_project(session_request, project, current_user, settings, store, sandbox_backend)
+
+
+@app.get('/api/v1/projects/{project_id}/skills', response_model=list[ProjectSkillResponse])
+async def list_project_skills(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> list[ProjectSkillResponse]:
+    await _get_project_or_404(store, project_id, current_user)
+    return [ProjectSkillResponse.from_record(record) for record in await store.list_project_skills(project_id)]
+
+
+@app.post('/api/v1/projects/{project_id}/skills/install', response_model=ProjectSkillResponse, status_code=201)
+async def install_project_skill(
+    project_id: str,
+    request: InstallProjectSkillRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> ProjectSkillResponse:
+    project = await _get_project_or_404(store, project_id, current_user)
+    record = _install_skill_or_http(manager, request.skill_name, project)
+    return ProjectSkillResponse.from_record(await store.upsert_project_skill(record))
+
+
+@app.post('/api/v1/projects/{project_id}/skills/{skill_name}/update', response_model=ProjectSkillResponse)
+async def update_project_skill(
+    project_id: str,
+    skill_name: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> ProjectSkillResponse:
+    project = await _get_project_or_404(store, project_id, current_user)
+    record = _install_skill_or_http(manager, skill_name, project)
+    return ProjectSkillResponse.from_record(await store.upsert_project_skill(record))
+
+
+@app.post('/api/v1/sessions', response_model=SessionResponse, status_code=201)
+async def create_session(
+    request: CreateSessionRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    sandbox_backend: Annotated[DockerSandboxBackend, Depends(get_sandbox_backend)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> SessionResponse:
+    if request.project_id:
+        project = await _get_project_or_404(store, request.project_id, current_user)
+    else:
+        project = await _create_project_record(
+            store,
+            settings,
+            current_user.user_id,
+            request.project_name or f'Session {request.session_id}',
         )
-    try:
-        sandbox = await sandbox_backend.create(request)
-        record = SessionRecord(
-            session_id=request.session_id,
-            sandbox_id=sandbox.sandbox_id,
-            sandbox_url=sandbox.sandbox_url,
-            sandbox_api_key=sandbox.sandbox_api_key,
-            container_name=sandbox.container_name,
-            sandbox_type=request.sandbox_type,
-            workspace_policy=request.workspace_policy,
-            workspace_dir=sandbox.workspace_dir,
-            status=SessionStatus.CREATED,
-        )
-        return SessionResponse.from_record(await store.create(record))
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, 'session_id already exists') from exc
-    except Exception as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _safe_error(exc)) from exc
+        for skill_name in request.skill_names:
+            installed = _install_skill_or_http(manager, skill_name, project)
+            await store.upsert_project_skill(installed)
+    return await _create_session_for_project(request, project, current_user, settings, store, sandbox_backend)
 
 
 @app.get('/api/v1/sessions/{session_id}', response_model=SessionResponse)
 async def get_session(
     session_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
 ) -> SessionResponse:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     return SessionResponse.from_record(record)
 
 
 @app.delete('/api/v1/sessions/{session_id}', response_model=SessionResponse)
 async def delete_session(
     session_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
     sandbox_backend: Annotated[DockerSandboxBackend, Depends(get_sandbox_backend)],
     agent_client: Annotated[AgentServerClient, Depends(get_agent_client)],
 ) -> SessionResponse:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     try:
         if record.conversation_id:
             await agent_client.delete_conversation(
@@ -134,11 +420,13 @@ async def delete_session(
 async def execute(
     session_id: str,
     request: ExecuteRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
     agent_client: Annotated[AgentServerClient, Depends(get_agent_client)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
 ) -> ExecuteResponse:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     if record.status == SessionStatus.DELETED:
         raise HTTPException(status.HTTP_410_GONE, 'session is deleted')
     record.status = SessionStatus.RUNNING
@@ -146,23 +434,29 @@ async def execute(
     await store.save(record)
     try:
         start_task_id: str | None = None
+        skills = request.skills
+        if record.project_id:
+            project = await store.get_project(record.project_id)
+            if project:
+                project_skills = await store.list_project_skills(project.project_id)
+                skills = manager.build_skill_specs(Path(project.workspace_dir), project_skills) + skills
         if record.conversation_id is None:
             info = await agent_client.start_conversation(
                 _require_sandbox_url(record),
                 _session_api_key_value(record),
                 request.task,
                 request.llm,
-                request.skills,
+                skills,
                 request.mcp_config,
             )
             record.conversation_id = _extract_conversation_id(info)
         else:
-            if request.skills or request.mcp_config:
+            if skills or request.mcp_config:
                 await agent_client.update_runtime(
                     _require_sandbox_url(record),
                     _session_api_key_value(record),
                     record.conversation_id,
-                    skills=request.skills if request.skills else None,
+                    skills=skills if skills else None,
                     mcp_config=request.mcp_config,
                 )
             await agent_client.send_message(
@@ -175,6 +469,7 @@ async def execute(
         await store.save(record)
         return ExecuteResponse(
             session_id=record.session_id,
+            project_id=record.project_id,
             sandbox_id=record.sandbox_id,
             conversation_id=record.conversation_id,
             status=record.status,
@@ -190,13 +485,14 @@ async def execute(
 @app.get('/api/v1/sessions/{session_id}/history', response_model=HistoryResponse)
 async def history(
     session_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
     agent_client: Annotated[AgentServerClient, Depends(get_agent_client)],
     page_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(gt=0, le=100)] = 100,
 ) -> HistoryResponse:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     if not record.conversation_id:
         raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
     page = await agent_client.search_events(
@@ -222,13 +518,14 @@ async def history(
 async def stream(
     session_id: str,
     request: Request,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
     agent_client: Annotated[AgentServerClient, Depends(get_agent_client)],
     settings: Annotated[Settings, Depends(get_settings)],
     after: Annotated[str | None, Query()] = None,
 ) -> StreamingResponse:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     if not record.conversation_id:
         raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
     event_id = after or request.headers.get('last-event-id')
@@ -240,11 +537,12 @@ async def stream(
 async def reload_skills(
     session_id: str,
     request: RuntimeUpdateRequest,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
     store: Annotated[SessionStore, Depends(get_store)],
     agent_client: Annotated[AgentServerClient, Depends(get_agent_client)],
 ) -> dict[str, Any]:
     _validate_id_or_400(session_id)
-    record = await _get_record_or_404(store, session_id)
+    record = await _get_record_or_404(store, session_id, current_user)
     if not record.conversation_id:
         raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
     if request.skills or request.mcp_config:
@@ -333,11 +631,131 @@ def _sse(event: str, data: object, event_id: str | None = None) -> str:
     return '\n'.join(parts) + '\n\n'
 
 
-async def _get_record_or_404(store: SessionStore, session_id: str) -> SessionRecord:
+async def _bootstrap_admin(settings: Settings, store: SessionStore) -> None:
+    if await store.user_count() > 0:
+        return
+    if not settings.bootstrap_admin_username or not settings.bootstrap_admin_password:
+        return
+    await store.create_user(
+        UserRecord(
+            username=settings.bootstrap_admin_username,
+            password_hash=hash_password(settings.bootstrap_admin_password.get_secret_value()),
+            role=UserRole.ADMIN,
+            enabled=True,
+        )
+    )
+
+
+async def _create_project_record(
+    store: SessionStore,
+    settings: Settings,
+    user_id: str,
+    name: str,
+) -> ProjectRecord:
+    project_id = new_id('prj')
+    workspace_dir = _project_workspace(settings, user_id, project_id)
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    return await store.create_project(
+        ProjectRecord(
+            project_id=project_id,
+            user_id=user_id,
+            name=name,
+            workspace_dir=str(workspace_dir),
+        )
+    )
+
+
+def _project_workspace(settings: Settings, user_id: str, project_id: str) -> Path:
+    data_root = settings.data_root.resolve()
+    workspace = (
+        data_root / 'users' / user_id / 'projects' / project_id / 'workspace'
+    ).resolve()
+    if data_root != workspace and data_root not in workspace.parents:
+        raise RuntimeError('project workspace escapes data root')
+    return workspace
+
+
+def _install_skill_or_http(
+    manager: SkillManager, skill_name: str, project: ProjectRecord
+) -> ProjectSkillRecord:
     try:
-        return await store.require(session_id)
+        return manager.install(skill_name, project.project_id, Path(project.workspace_dir))
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'skill not found') from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+async def _get_project_or_404(
+    store: SessionStore, project_id: str, current_user: UserRecord
+) -> ProjectRecord:
+    project = await store.get_project(project_id)
+    if (
+        project is None
+        or project.status == ProjectStatus.DELETED
+        or project.user_id != current_user.user_id
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'project not found')
+    return project
+
+
+async def _create_session_for_project(
+    request: CreateSessionRequest,
+    project: ProjectRecord,
+    current_user: UserRecord,
+    settings: Settings,
+    store: SessionStore,
+    sandbox_backend: DockerSandboxBackend,
+) -> SessionResponse:
+    if request.sandbox_type != SandboxType.DOCKER and not settings.allow_non_docker_sandbox:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            'Only docker sandbox sessions are allowed by default; set MGHANDS_ALLOW_NON_DOCKER_SANDBOX=true for local development only.',
+        )
+    active = await store.get_active_session_for_project(project.project_id)
+    if active is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {
+                'detail': 'project has a running session',
+                'running_session_id': active.session_id,
+                'action_required': 'stop_running_session_first',
+            },
+        )
+    try:
+        sandbox = await sandbox_backend.create(request, Path(project.workspace_dir))
+        record = SessionRecord(
+            session_id=request.session_id,
+            project_id=project.project_id,
+            sandbox_id=sandbox.sandbox_id,
+            sandbox_url=sandbox.sandbox_url,
+            sandbox_api_key=sandbox.sandbox_api_key,
+            container_name=sandbox.container_name,
+            created_by_user_id=current_user.user_id,
+            sandbox_type=request.sandbox_type,
+            workspace_policy=request.workspace_policy,
+            workspace_dir=sandbox.workspace_dir,
+            status=SessionStatus.CREATED,
+        )
+        return SessionResponse.from_record(await store.create(record))
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, 'session_id already exists') from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _safe_error(exc)) from exc
+
+
+async def _get_record_or_404(
+    store: SessionStore, session_id: str, current_user: UserRecord
+) -> SessionRecord:
+    try:
+        record = await store.require(session_id)
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'session not found') from exc
+    if record.created_by_user_id != current_user.user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'session not found')
+    return record
 
 
 def _validate_id_or_400(session_id: str) -> None:

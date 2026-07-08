@@ -197,6 +197,50 @@ Gateway 启动容器时还会附加：
 $env:MGHANDS_DATABASE_PATH="D:\iso\Mghands\.mghands\sessions.sqlite3"
 ```
 
+### 认证、项目和共享技能
+
+首次启动可配置 bootstrap 管理员。只有当 `users` 表为空时才会创建：
+
+```powershell
+$env:MGHANDS_BOOTSTRAP_ADMIN_USERNAME="admin"
+$env:MGHANDS_BOOTSTRAP_ADMIN_PASSWORD="change-me-strong-password"
+```
+
+Bearer token TTL 默认 30 天：
+
+```powershell
+$env:MGHANDS_AUTH_ACCESS_TOKEN_TTL_SECONDS="2592000"
+```
+
+公开注册默认关闭：
+
+```powershell
+$env:MGHANDS_AUTH_PUBLIC_REGISTRATION_ENABLED="false"
+$env:MGHANDS_AUTH_REGISTERED_USER_DEFAULT_ENABLED="true"
+```
+
+项目 workspace 由 Gateway 管理，默认位于：
+
+```text
+MGHANDS_DATA_ROOT/users/<user_id>/projects/<project_id>/workspace
+```
+
+共享技能根目录由管理员维护：
+
+```powershell
+$env:MGHANDS_DATA_ROOT="D:\iso\Mghands\.mghands"
+$env:MGHANDS_SHARED_SKILLS_ROOT="C:\Mghands\shared_skills"
+$env:MGHANDS_DEFAULT_PROJECT_SKILLS="ppt-master"
+```
+
+共享技能安装是项目内快照复制：
+
+```text
+<project workspace>/.mghands/skills/<skill_name>
+```
+
+如果技能目录包含 `requirements.txt`，Gateway 只检测并返回依赖元数据，不执行安装。可信依赖必须由管理员预装到 sandbox 镜像。
+
 ### Sandbox 隔离策略
 
 默认只允许创建 `sandbox_type=docker` 的 session：

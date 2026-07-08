@@ -36,6 +36,8 @@ Gateway does not run `Conversation.run()` directly. It handles session persisten
 Important files:
 
 - `src/mghands_gateway/app.py`
+- `src/mghands_gateway/auth.py`
+- `src/mghands_gateway/skills.py`
 - `src/mghands_gateway/agent_client.py`
 - `src/mghands_gateway/sandbox_backend.py`
 - `src/mghands_gateway/session_store.py`
@@ -43,11 +45,15 @@ Important files:
 
 Gateway responsibilities:
 
+- Authenticate users with built-in username/password login and opaque bearer tokens.
+- Persist users, token hashes, projects, project skills, and sessions in SQLite.
+- Create Gateway-managed project workspaces under `MGHANDS_DATA_ROOT`.
 - Create, query, delete sessions.
 - Start one Docker sandbox per session.
 - Mount a host workspace directory into the container.
 - Inject `OH_SESSION_API_KEYS_0` for sandbox request auth.
 - Create or reuse sandbox conversations.
+- Install shared skills by name as project-local snapshots under `.mghands/skills`.
 - Forward user tasks to sandbox events.
 - Poll sandbox event history and expose Gateway history/SSE endpoints.
 
@@ -74,6 +80,19 @@ Prefer these APIs for frontend integration.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `POST` | `/api/v1/auth/register` | Optional public user registration when enabled. |
+| `POST` | `/api/v1/auth/login` | Username/password login; returns opaque bearer token. |
+| `POST` | `/api/v1/auth/logout` | Revoke current bearer token. |
+| `GET` | `/api/v1/me` | Return current authenticated user. |
+| `GET` | `/api/v1/skills/catalog` | List admin-configured shared skills and dependency metadata. |
+| `POST` | `/api/v1/projects` | Create a Gateway-managed project workspace. |
+| `GET` | `/api/v1/projects` | List current user's projects. |
+| `GET` | `/api/v1/projects/{project_id}` | Query one project. |
+| `DELETE` | `/api/v1/projects/{project_id}` | Mark a project deleted. |
+| `POST` | `/api/v1/projects/{project_id}/sessions` | Create a clean session for an existing project. |
+| `GET` | `/api/v1/projects/{project_id}/skills` | List installed project skill snapshots. |
+| `POST` | `/api/v1/projects/{project_id}/skills/install` | Install a shared skill snapshot into a project. |
+| `POST` | `/api/v1/projects/{project_id}/skills/{skill_name}/update` | Refresh a project skill snapshot from shared root. |
 | `POST` | `/api/v1/sessions` | Create a session and sandbox container. |
 | `GET` | `/api/v1/sessions/{session_id}` | Query session metadata. |
 | `DELETE` | `/api/v1/sessions/{session_id}` | Delete conversation and destroy sandbox. |
@@ -85,11 +104,51 @@ Prefer these APIs for frontend integration.
 Frontend should usually consume:
 
 ```text
+POST /api/v1/auth/login
+GET  /api/v1/skills/catalog
+POST /api/v1/projects
+POST /api/v1/projects/{project_id}/sessions
 POST /api/v1/sessions
 POST /api/v1/sessions/{session_id}/execute
 GET  /api/v1/sessions/{session_id}/stream
 GET  /api/v1/sessions/{session_id}/history
 ```
+
+All `/api/v1/*` endpoints except registration and login require `Authorization: Bearer <access_token>`. Existing session-centric APIs are retained for compatibility; new frontend integrations should prefer the project-centric flow.
+
+## Auth And Project Isolation
+
+Gateway auth is built in. `POST /api/v1/auth/login` accepts username/password and returns an opaque token once; SQLite stores only the token hash. Configure first-run bootstrap with `MGHANDS_BOOTSTRAP_ADMIN_USERNAME` and `MGHANDS_BOOTSTRAP_ADMIN_PASSWORD`. If the users table is not empty, bootstrap env vars are ignored.
+
+Project workspaces are never arbitrary user-supplied host paths. New project workspaces live at:
+
+```text
+MGHANDS_DATA_ROOT/users/<user_id>/projects/<project_id>/workspace
+```
+
+The sandbox mount remains:
+
+```text
+<project workspace> -> /workspace
+```
+
+A project allows at most one active `created` or `running` session. A second session creation returns `409 Conflict` with `running_session_id` and `action_required=stop_running_session_first`.
+
+## Shared Skill Snapshots
+
+Shared skills are installed by name from `MGHANDS_SHARED_SKILLS_ROOT`; users cannot provide arbitrary host paths. Installing a skill copies the entire shared skill directory into:
+
+```text
+<project workspace>/.mghands/skills/<skill_name>
+```
+
+The injected skill content starts with:
+
+```text
+SKILL_DIR=/workspace/.mghands/skills/<skill_name>
+```
+
+If a skill contains `requirements.txt`, Gateway only detects and reports dependency metadata. It never runs `pip` or install commands during catalog, install, update, or execute. Administrators must preinstall trusted dependencies in the sandbox image.
 
 ## Current Sandbox APIs
 

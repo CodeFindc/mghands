@@ -24,11 +24,14 @@ class DockerSandboxBackend:
         self.settings = settings
         self.agent_client = agent_client
 
-    async def create(self, request: CreateSessionRequest) -> SandboxHandle:
+    async def create(
+        self, request: CreateSessionRequest, workspace_dir: Path | None = None
+    ) -> SandboxHandle:
         sandbox_id = f'mghands-{request.session_id}'
         container_name = sandbox_id
         session_api_key = 'sk-mghands-' + secrets.token_urlsafe(24)
-        workspace_dir = self._prepare_workspace(request.session_id)
+        workspace_dir = workspace_dir.resolve() if workspace_dir else self._prepare_workspace(request.session_id)
+        workspace_dir.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(
             self._run_container,
             container_name,
