@@ -327,6 +327,8 @@ class CreateProjectSessionRequest(BaseModel):
 
 
 class InstalledSkillMetadata(BaseModel):
+    source_type: str | None = None
+    source_name: str | None = None
     requires_dependencies: bool = False
     dependency_manifest: str | None = None
     dependency_status: str | None = None

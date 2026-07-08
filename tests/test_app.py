@@ -1,4 +1,6 @@
 import asyncio
+from io import BytesIO
+import zipfile
 
 from fastapi.testclient import TestClient
 
@@ -50,6 +52,14 @@ def _auth_headers(tmp_path, client: TestClient, username='admin') -> dict[str, s
     )
     assert response.status_code == 200
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
+
+
+def _zip(entries: dict[str, str]) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        for name, content in entries.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
 
 
 def test_create_session_rejects_process_sandbox_by_default(tmp_path) -> None:
@@ -127,5 +137,62 @@ def test_project_session_conflict_for_active_session(tmp_path) -> None:
         )
         assert second.status_code == 409
         assert second.json()['detail']['running_session_id'] == 'tenant-a'
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_upload_project_skill_is_project_local_and_listed(tmp_path) -> None:
+    app.dependency_overrides[get_settings] = lambda: _settings(tmp_path)
+    app.dependency_overrides[get_store] = lambda: _store(tmp_path)
+    app.dependency_overrides[get_sandbox_backend] = lambda: FakeSandboxBackend()
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(tmp_path, client)
+        project = client.post('/api/v1/projects', json={'name': 'Demo'}, headers=headers)
+        assert project.status_code == 201
+        project_id = project.json()['project_id']
+
+        response = client.post(
+            f'/api/v1/projects/{project_id}/skills/upload',
+            data={'skill_name': 'uploaded-skill'},
+            files={'file': ('uploaded.zip', _zip({'SKILL.md': 'Use upload.'}), 'application/zip')},
+            headers=headers,
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body['skill_name'] == 'uploaded-skill'
+        assert body['metadata']['source_type'] == 'uploaded'
+        assert body['metadata']['source_name'] == 'uploaded.zip'
+        listed = client.get(f'/api/v1/projects/{project_id}/skills', headers=headers)
+        assert listed.status_code == 200
+        assert [item['skill_name'] for item in listed.json()] == ['uploaded-skill']
+        catalog = client.get('/api/v1/skills/catalog', headers=headers)
+        assert catalog.status_code == 200
+        assert catalog.json()['items'] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_upload_project_skill_rejects_invalid_archive(tmp_path) -> None:
+    app.dependency_overrides[get_settings] = lambda: _settings(tmp_path)
+    app.dependency_overrides[get_store] = lambda: _store(tmp_path)
+    app.dependency_overrides[get_sandbox_backend] = lambda: FakeSandboxBackend()
+    try:
+        client = TestClient(app)
+        headers = _auth_headers(tmp_path, client)
+        project = client.post('/api/v1/projects', json={'name': 'Demo'}, headers=headers)
+        assert project.status_code == 201
+        project_id = project.json()['project_id']
+
+        response = client.post(
+            f'/api/v1/projects/{project_id}/skills/upload',
+            data={'skill_name': 'uploaded-skill'},
+            files={'file': ('uploaded.zip', b'not a zip', 'application/zip')},
+            headers=headers,
+        )
+
+        assert response.status_code == 400
+        assert 'valid zip' in response.json()['detail']
     finally:
         app.dependency_overrides.clear()

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from mghands_gateway.auth import (
@@ -53,7 +53,7 @@ from mghands_gateway.models import (
 )
 from mghands_gateway.sandbox_backend import DockerSandboxBackend
 from mghands_gateway.session_store import SessionStore
-from mghands_gateway.skills import SkillManager
+from mghands_gateway.skills import MAX_ZIP_UPLOAD_BYTES, SkillManager
 
 
 def get_store(settings: Annotated[Settings, Depends(get_settings)]) -> SessionStore:
@@ -338,6 +338,24 @@ async def install_project_skill(
 ) -> ProjectSkillResponse:
     project = await _get_project_or_404(store, project_id, current_user)
     record = _install_skill_or_http(manager, request.skill_name, project)
+    return ProjectSkillResponse.from_record(await store.upsert_project_skill(record))
+
+
+@app.post('/api/v1/projects/{project_id}/skills/upload', response_model=ProjectSkillResponse, status_code=201)
+async def upload_project_skill(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+    skill_name: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+) -> ProjectSkillResponse:
+    project = await _get_project_or_404(store, project_id, current_user)
+    content = await file.read(MAX_ZIP_UPLOAD_BYTES + 1)
+    try:
+        record = manager.upload_zip(skill_name, project.project_id, Path(project.workspace_dir), content, file.filename)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return ProjectSkillResponse.from_record(await store.upsert_project_skill(record))
 
 

@@ -1,5 +1,7 @@
 import hashlib
 import shutil
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 from mghands_gateway.models import (
@@ -11,6 +13,9 @@ from mghands_gateway.models import (
 )
 
 MAX_REQUIREMENTS_BYTES = 64 * 1024
+MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_ZIP_FILES = 500
+MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024
 
 
 class SkillManager:
@@ -63,7 +68,58 @@ class SkillManager:
             project_id=project_id,
             skill_name=skill_name,
             source_fingerprint=self._fingerprint(source),
-            metadata=self._metadata(source),
+            metadata=self._metadata(source, source_type='shared', source_name=skill_name),
+        )
+
+    def upload_zip(
+        self,
+        skill_name: str,
+        project_id: str,
+        workspace_dir: Path,
+        content: bytes,
+        filename: str | None = None,
+    ) -> ProjectSkillRecord:
+        if len(content) > MAX_ZIP_UPLOAD_BYTES:
+            raise ValueError('zip upload is too large')
+        if not zipfile.is_zipfile(BytesIO(content)):
+            raise ValueError('uploaded file is not a valid zip archive')
+
+        target = self._target_dir(workspace_dir, skill_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(f'.{target.name}.uploading')
+        replacement = target.with_name(f'.{target.name}.tmp')
+        backup = target.with_name(f'.{target.name}.previous')
+        for path in (staging, replacement, backup):
+            if path.exists():
+                shutil.rmtree(path)
+        try:
+            staging.mkdir(parents=True)
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                self._extract_zip(archive, staging)
+            root = self._normalized_skill_root(staging)
+            self._validate_skill_dir(root)
+            shutil.copytree(root, replacement, symlinks=False)
+            if target.exists():
+                target.replace(backup)
+            try:
+                replacement.replace(target)
+            except Exception:
+                if backup.exists() and not target.exists():
+                    backup.replace(target)
+                raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+            if replacement.exists():
+                shutil.rmtree(replacement)
+            if backup.exists():
+                shutil.rmtree(backup)
+
+        return ProjectSkillRecord(
+            project_id=project_id,
+            skill_name=validate_safe_name(skill_name, 'skill name'),
+            source_fingerprint=self._fingerprint(target),
+            metadata=self._metadata(target, source_type='uploaded', source_name=filename),
         )
 
     def build_skill_specs(self, workspace_dir: Path, records: list[ProjectSkillRecord]) -> list[SkillSpec]:
@@ -109,11 +165,18 @@ class SkillManager:
             if item.is_symlink():
                 raise ValueError('skill symlinks are not allowed')
 
-    def _metadata(self, path: Path) -> InstalledSkillMetadata:
+    def _metadata(
+        self,
+        path: Path,
+        source_type: str | None = None,
+        source_name: str | None = None,
+    ) -> InstalledSkillMetadata:
         skill_md = path / 'SKILL.md'
         content = skill_md.read_text(encoding='utf-8') if skill_md.exists() else ''
         dependencies = self._dependencies(path)
         return InstalledSkillMetadata(
+            source_type=source_type,
+            source_name=source_name,
             requires_dependencies=bool(dependencies),
             dependency_manifest='requirements.txt' if dependencies else None,
             dependency_status='not_managed_by_gateway' if dependencies else None,
@@ -124,6 +187,58 @@ class SkillManager:
             description=self._frontmatter_value(content, 'description'),
             triggers=self._frontmatter_list(content, 'triggers'),
         )
+
+    def _extract_zip(self, archive: zipfile.ZipFile, destination: Path) -> None:
+        files = 0
+        total_size = 0
+        for info in archive.infolist():
+            parts = self._zip_path_parts(info.filename)
+            mode = (info.external_attr >> 16) & 0o170000
+            if mode in {0o120000, 0o10000, 0o20000, 0o60000, 0o140000}:
+                raise ValueError('zip archive contains symlinks or special files')
+            if mode not in {0, 0o100000, 0o40000}:
+                raise ValueError('zip archive contains symlinks or special files')
+            if info.is_dir():
+                target_dir = (destination / Path(*parts)).resolve()
+                if destination.resolve() != target_dir and destination.resolve() not in target_dir.parents:
+                    raise ValueError('zip entry escapes extraction directory')
+                target_dir.mkdir(parents=True, exist_ok=True)
+                continue
+            files += 1
+            if files > MAX_ZIP_FILES:
+                raise ValueError('zip archive contains too many files')
+            total_size += info.file_size
+            if total_size > MAX_ZIP_UNCOMPRESSED_BYTES:
+                raise ValueError('zip archive is too large after extraction')
+            target = (destination / Path(*parts)).resolve()
+            if destination.resolve() != target and destination.resolve() not in target.parents:
+                raise ValueError('zip entry escapes extraction directory')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as source, target.open('wb') as output:
+                shutil.copyfileobj(source, output)
+
+    def _zip_path_parts(self, name: str) -> tuple[str, ...]:
+        normalized = name.replace('\\', '/')
+        path = Path(normalized)
+        if not normalized or normalized.startswith('/') or path.is_absolute():
+            raise ValueError('zip archive contains unsafe paths')
+        if len(normalized) >= 2 and normalized[1] == ':':
+            raise ValueError('zip archive contains unsafe paths')
+        stripped = normalized.rstrip('/')
+        parts = tuple(stripped.split('/')) if stripped else ()
+        if not parts or any(part in {'.', '..'} for part in parts):
+            raise ValueError('zip archive contains unsafe paths')
+        if any(not part for part in parts):
+            raise ValueError('zip archive contains unsafe paths')
+        return parts
+
+    def _normalized_skill_root(self, staging: Path) -> Path:
+        if (staging / 'SKILL.md').is_file():
+            return staging
+        children = [item for item in staging.iterdir() if item.name not in {'.', '..'}]
+        if len(children) == 1 and children[0].is_dir() and (children[0] / 'SKILL.md').is_file():
+            return children[0]
+        raise ValueError('skill is missing SKILL.md')
 
     def _dependencies(self, path: Path) -> list[str]:
         requirements = path / 'requirements.txt'
