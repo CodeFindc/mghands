@@ -1,4 +1,4 @@
-import type { Project, Session, SkillCatalog, TimelineEvent, User, LLMModel, SystemSettings, SkillCatalogItem, WorkspaceFile } from './types';
+import type { Project, Session, SkillCatalog, TimelineEvent, User, LLMModel, SystemSettings, SkillCatalogItem, WorkspaceFile, ProjectSkill } from './types';
 
 const API_ROOT = '/api/v1';
 
@@ -209,6 +209,29 @@ export const api = {
   },
   listProjectSessions(token: string, projectId: string) {
     return request<Session[]>(`/projects/${projectId}/sessions`, token);
+  },
+  listProjectSkills(token: string, projectId: string) {
+    return request<ProjectSkill[]>(`/projects/${projectId}/skills`, token);
+  },
+  installProjectSkill(token: string, projectId: string, skillName: string) {
+    return request<ProjectSkill>(`/projects/${projectId}/skills/install`, token, {
+      method: 'POST',
+      body: JSON.stringify({ skill_name: skillName }),
+    });
+  },
+  updateProjectSkill(token: string, projectId: string, skillName: string) {
+    return request<ProjectSkill>(`/projects/${projectId}/skills/${skillName}/update`, token, {
+      method: 'POST',
+    });
+  },
+  uploadProjectSkill(token: string, projectId: string, skillName: string, file: File) {
+    const formData = new FormData();
+    formData.append('skill_name', skillName);
+    formData.append('file', file);
+    return request<ProjectSkill>(`/projects/${projectId}/skills/upload`, token, {
+      method: 'POST',
+      body: formData,
+    });
   },
 };
 

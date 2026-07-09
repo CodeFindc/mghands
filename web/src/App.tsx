@@ -26,9 +26,10 @@ import {
   ChevronRight,
   ChevronDown,
   FileText,
+  Upload,
 } from 'lucide-react';
 import { ApiError, api, errorMessage } from './api';
-import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings, WorkspaceFile } from './types';
+import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings, WorkspaceFile, ProjectSkill } from './types';
 
 const TOKEN_KEY = 'mghands.access_token';
 const SESSION_MAP_KEY = 'mghands.project_sessions';
@@ -214,13 +215,17 @@ function MainApp() {
   const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
   // New Redesign UI Tab States
-  const [activeTab, setActiveTab] = useState<'chat' | 'shell' | 'files'>('chat');
+  const [activeTab, setActiveTab] = useState<'chat' | 'shell' | 'files' | 'skills'>('chat');
   const [sessions, setSessions] = useState<Session[]>([]);
   const [projectFiles, setProjectFiles] = useState<WorkspaceFile[]>([]);
+  const [projectSkills, setProjectSkills] = useState<ProjectSkill[]>([]);
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedFileContent, setSelectedFileContent] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const [collapsedTools, setCollapsedTools] = useState<Record<string, boolean>>({});
+
+  const [customSkillName, setCustomSkillName] = useState('');
+  const skillFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Admin View States
   const [isAdminView, setIsAdminView] = useState(false);
@@ -281,6 +286,13 @@ function MainApp() {
     }
   }, [activeTab, selectedProjectId, token]);
 
+  // Load project skills when on Skills tab
+  useEffect(() => {
+    if (activeTab === 'skills' && selectedProjectId && token) {
+      void loadProjectSkills();
+    }
+  }, [activeTab, selectedProjectId, token]);
+
   // Load file content when selecting a file path
   useEffect(() => {
     if (selectedFilePath && selectedProjectId && token) {
@@ -337,6 +349,63 @@ function MainApp() {
       setProjectFiles(list);
     } catch (e) {
       setNotice(errorMessage(e));
+    }
+  }
+
+  async function loadProjectSkills() {
+    if (!token || !selectedProjectId) return;
+    try {
+      const list = await api.listProjectSkills(token, selectedProjectId);
+      setProjectSkills(list);
+    } catch (e) {
+      setNotice(errorMessage(e));
+    }
+  }
+
+  async function handleInstallSkill(skillName: string) {
+    if (!token || !selectedProjectId) return;
+    setBusy(true);
+    try {
+      await api.installProjectSkill(token, selectedProjectId, skillName);
+      await loadProjectSkills();
+    } catch (e) {
+      setNotice(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUpdateSkill(skillName: string) {
+    if (!token || !selectedProjectId) return;
+    setBusy(true);
+    try {
+      await api.updateProjectSkill(token, selectedProjectId, skillName);
+      await loadProjectSkills();
+    } catch (e) {
+      setNotice(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleProjectUploadSkill(event: FormEvent) {
+    event.preventDefault();
+    if (!token || !selectedProjectId || !customSkillName.trim()) return;
+    const files = skillFileInputRef.current?.files;
+    if (!files || files.length === 0) {
+      setNotice('请选择需要上传的 .zip 文件');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.uploadProjectSkill(token, selectedProjectId, customSkillName.trim(), files[0]);
+      setCustomSkillName('');
+      if (skillFileInputRef.current) skillFileInputRef.current.value = '';
+      await loadProjectSkills();
+    } catch (e) {
+      setNotice(errorMessage(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1365,6 +1434,12 @@ function MainApp() {
               }}>
                 工作区 (Files)
               </button>
+              <button className={`tab-btn ${activeTab === 'skills' ? 'active' : ''}`} onClick={() => {
+                setActiveTab('skills');
+                void loadProjectSkills();
+              }}>
+                项目技能 (Skills)
+              </button>
             </div>
 
             <div className="session-actions">
@@ -1517,6 +1592,124 @@ function MainApp() {
                       <h3>请在左侧文件树中点击选择文件进行预览</h3>
                     </div>
                   )}
+                </div>
+              </section>
+            </div>
+          )}
+
+          {activeTab === 'skills' && (
+            <div className="skills-panel-shell">
+              <aside className="skills-catalog-panel">
+                <div className="panel-title"><Sparkles size={18} /> 共享技能仓库</div>
+                <div className="skills-catalog-body">
+                  {skills.length ? skills.map((skill) => {
+                    const isInstalled = projectSkills.some((ps) => ps.skill_name === skill.name);
+                    return (
+                      <div key={skill.name} className="skill-card-item">
+                        <div className="skill-card-header-row">
+                          <strong className="skill-card-name">{skill.name}</strong>
+                          <span className={`skill-card-status ${isInstalled ? 'installed' : 'uninstalled'}`}>
+                            {isInstalled ? '已启用' : '未启用'}
+                          </span>
+                        </div>
+                        <p className="skill-card-desc">{skill.metadata?.description || '暂无描述信息'}</p>
+                        {skill.metadata?.triggers && skill.metadata.triggers.length > 0 && (
+                          <div className="skill-meta-tags">
+                            <span className="meta-label">触发规则:</span>
+                            {skill.metadata.triggers.map((trigger) => (
+                              <span key={trigger} className="tag-mini">{trigger}</span>
+                            ))}
+                          </div>
+                        )}
+                        {skill.metadata?.requires_dependencies && (
+                          <div className="skill-dependency-alert">
+                            <span>依赖状态: {skill.metadata.dependency_status || '未知'}</span>
+                            {skill.metadata.dependencies && skill.metadata.dependencies.length > 0 && (
+                              <div className="dependency-list">
+                                {skill.metadata.dependencies.map((dep) => (
+                                  <span key={dep} className="dep-tag">{dep}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <div className="skill-card-actions">
+                          {isInstalled ? (
+                            <button
+                              className="update-btn"
+                              disabled={busy}
+                              onClick={() => handleUpdateSkill(skill.name)}
+                            >
+                              同步更新技能
+                            </button>
+                          ) : (
+                            <button
+                              className="install-btn"
+                              disabled={busy}
+                              onClick={() => handleInstallSkill(skill.name)}
+                            >
+                              安装并启用技能
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  }) : (
+                    <div className="empty-mini">后台暂无配置的共享技能</div>
+                  )}
+                </div>
+              </aside>
+
+              <section className="skills-custom-panel">
+                <div className="panel-title">
+                  <Upload size={18} /> <span>上传自定义技能 (.zip)</span>
+                </div>
+                <div className="skills-custom-body">
+                  <form onSubmit={handleProjectUploadSkill} className="upload-skill-form">
+                    <div className="form-group">
+                      <label>技能名称 (必须与代码中匹配)</label>
+                      <input
+                        placeholder="例如: coder_agent"
+                        value={customSkillName}
+                        onChange={(e) => setCustomSkillName(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>选择技能压缩包 (.zip)</label>
+                      <input
+                        type="file"
+                        accept=".zip"
+                        ref={skillFileInputRef}
+                        required
+                      />
+                    </div>
+                    <button type="submit" className="primary-upload-btn" disabled={busy}>
+                      {busy ? '正在上传...' : '开始上传并安装技能'}
+                    </button>
+                  </form>
+
+                  <div className="installed-skills-list-section">
+                    <h3>已启用的项目本地快照 (.{selectedProject?.name}/.mghands/skills/)</h3>
+                    {projectSkills.length ? (
+                      <div className="installed-grid">
+                        {projectSkills.map((ps) => (
+                          <div key={ps.skill_name} className="installed-skill-box">
+                            <div className="installed-skill-header">
+                              <strong>{ps.skill_name}</strong>
+                              <small>已安装</small>
+                            </div>
+                            <p>{ps.metadata?.description || '项目专属自定义技能'}</p>
+                            <div className="installed-skill-footer">
+                              <span>安装于: {new Date(ps.installed_at).toLocaleString()}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-mini">当前项目暂未启用任何技能。请在左侧选择安装共享技能或在上方上传自定义技能。</div>
+                    )}
+                  </div>
                 </div>
               </section>
             </div>

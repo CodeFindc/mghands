@@ -72,3 +72,17 @@ export type WorkspaceFile = {
   size: number;
   updated_at: string;
 };
+
+export type ProjectSkill = {
+  skill_name: string;
+  source_fingerprint?: string | null;
+  metadata: {
+    description?: string | null;
+    requires_dependencies?: boolean;
+    dependency_status?: string | null;
+    dependencies?: string[];
+    triggers?: string[];
+  };
+  installed_at: string;
+  updated_at: string;
+};
