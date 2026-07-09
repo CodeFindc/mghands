@@ -836,15 +836,21 @@ function MainApp() {
 
   // Auto-scroll chat timeline to bottom
   useEffect(() => {
-    if (activeTab === 'chat') {
-      timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (activeTab === 'chat' && events.length > 0) {
+      const timer = setTimeout(() => {
+        timelineEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      }, 50);
+      return () => clearTimeout(timer);
     }
   }, [events, activeTab]);
 
   // Auto-scroll terminal logs to bottom
   useEffect(() => {
-    if (activeTab === 'shell') {
-      terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (activeTab === 'shell' && terminalLogs.length > 0) {
+      const timer = setTimeout(() => {
+        terminalEndRef.current?.scrollIntoView({ behavior: 'auto' });
+      }, 50);
+      return () => clearTimeout(timer);
     }
   }, [terminalLogs, activeTab]);
 
