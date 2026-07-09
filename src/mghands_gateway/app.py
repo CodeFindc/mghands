@@ -857,6 +857,7 @@ async def _event_stream(
         emitted = False
         if isinstance(page, dict):
             items = page.get('items', [])
+            db_dirty = False
             for event in items:
                 event_id = str(event.get('id') or '')
                 if not event_id or event_id in seen:
@@ -867,7 +868,15 @@ async def _event_stream(
                     continue
                 seen.add(event_id)
                 record.last_event_id = event_id
-                await store.save(record)
+                
+                # Sync Sandbox execution completion/error to Gateway database status
+                if event.get('kind') == 'agent.result':
+                    record.status = SessionStatus.COMPLETED
+                elif event.get('kind') == 'agent.error':
+                    record.status = SessionStatus.ERROR
+                    record.error = event.get('data', {}).get('error')
+                
+                db_dirty = True
                 emitted = True
                 yield _sse(event='message', data=event, event_id=event_id).encode('utf-8')
             
@@ -878,6 +887,9 @@ async def _event_stream(
             else:
                 if not after_seen:
                     after_seen = True
+
+            if db_dirty:
+                await store.save(record)
 
         if record.status in {SessionStatus.ERROR, SessionStatus.DELETED}:
             terminal_type = 'error' if record.status == SessionStatus.ERROR else 'cancelled'
