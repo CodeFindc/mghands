@@ -638,6 +638,21 @@ async def delete_session(
 ) -> SessionResponse:
     _validate_id_or_400(session_id)
     record = await _get_record_or_404(store, session_id, current_user)
+
+    # Pre-fetch and cache conversation events before tearing down the sandbox container
+    events = []
+    if record.conversation_id:
+        try:
+            page = await agent_client.search_events(
+                _require_sandbox_url(record),
+                _session_api_key_value(record),
+                record.conversation_id,
+                limit=1000,
+            )
+            events = page.get('items', []) if isinstance(page, dict) else []
+        except Exception:
+            pass
+
     try:
         if record.conversation_id:
             await agent_client.delete_conversation(
@@ -647,11 +662,15 @@ async def delete_session(
             )
         await sandbox_backend.delete(record.container_name)
     except Exception as exc:
+        record.events = events
         record.status = SessionStatus.ERROR
         record.error = _safe_error(exc)
         await store.save(record)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, record.error) from exc
-    deleted = await store.mark_deleted(session_id)
+
+    record.events = events
+    record.status = SessionStatus.DELETED
+    deleted = await store.save(record)
     return SessionResponse.from_record(deleted)
 
 
@@ -746,16 +765,58 @@ async def history(
     record = await _get_record_or_404(store, session_id, current_user)
     if not record.conversation_id:
         raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
-    page = await agent_client.search_events(
-        _require_sandbox_url(record),
-        _session_api_key_value(record),
-        record.conversation_id,
-        page_id=page_id,
-        limit=limit,
-    )
+
+    if record.status == SessionStatus.DELETED:
+        cached = record.events or []
+        start_idx = 0
+        if page_id:
+            for idx, ev in enumerate(cached):
+                if str(ev.get('id')) == page_id:
+                    start_idx = idx + 1
+                    break
+        sliced = cached[start_idx : start_idx + limit]
+        next_page = str(sliced[-1].get('id')) if len(sliced) == limit and start_idx + limit < len(cached) else None
+        return HistoryResponse(
+            session_id=session_id,
+            conversation_id=record.conversation_id,
+            events=sliced,
+            next_page_id=next_page,
+        )
+
+    try:
+        page = await agent_client.search_events(
+            _require_sandbox_url(record),
+            _session_api_key_value(record),
+            record.conversation_id,
+            page_id=page_id,
+            limit=limit,
+        )
+    except Exception as exc:
+        if record.events:
+            cached = record.events
+            start_idx = 0
+            if page_id:
+                for idx, ev in enumerate(cached):
+                    if str(ev.get('id')) == page_id:
+                        start_idx = idx + 1
+                        break
+            sliced = cached[start_idx : start_idx + limit]
+            next_page = str(sliced[-1].get('id')) if len(sliced) == limit and start_idx + limit < len(cached) else None
+            return HistoryResponse(
+                session_id=session_id,
+                conversation_id=record.conversation_id,
+                events=sliced,
+                next_page_id=next_page,
+            )
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, _safe_error(exc)) from exc
+
     events = page.get('items', []) if isinstance(page, dict) else []
     if events:
         record.last_event_id = str(events[-1].get('id') or record.last_event_id)
+        existing = record.events or []
+        existing_ids = {str(e.get('id')) for e in existing if e.get('id')}
+        new_events = [e for e in events if str(e.get('id')) not in existing_ids]
+        record.events = existing + new_events
         await store.save(record)
     return HistoryResponse(
         session_id=session_id,

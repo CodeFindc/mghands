@@ -166,6 +166,7 @@ class SessionRecord(BaseModel):
     error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    events: list[dict[str, Any]] | None = None
 
     @field_serializer('sandbox_api_key')
     def serialize_sandbox_api_key(
