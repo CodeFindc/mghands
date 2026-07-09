@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CheckCircle2,
@@ -48,18 +48,23 @@ function saveSessionMap(map: SessionMap) {
 }
 
 function eventTitle(event: TimelineEvent): string {
+  if (!event) return '事件';
   const kind = event.kind || 'event';
   if (kind === 'message') return '用户消息';
   if (kind === 'agent.result') return '运行结果';
   if (kind === 'agent.error') return '运行错误';
-  if (kind.includes('ActionEvent')) return '工具调用';
-  if (kind.includes('ObservationEvent')) return '工具结果';
-  if (kind.includes('MessageEvent')) return '模型消息';
-  return kind;
+  if (String(kind).includes('ActionEvent')) return '工具调用';
+  if (String(kind).includes('ObservationEvent')) return '工具结果';
+  if (String(kind).includes('MessageEvent')) return '模型消息';
+  return String(kind);
 }
 
 function eventPreview(event: TimelineEvent): string {
-  const data = event.data || {};
+  if (!event) return '';
+  const data = event.data;
+  if (!data || typeof data !== 'object') {
+    return JSON.stringify(event, null, 2);
+  }
   const preview = data.preview;
   const message = data.message || data.content || data.result || data.error || data.detail;
   if (typeof preview === 'string' && preview.trim()) return preview;
@@ -83,7 +88,43 @@ interface TreeNode {
   children: Record<string, TreeNode>;
 }
 
-export default function App() {
+// Global Error Boundary to prevent React white screen crashes
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+  state = { hasError: false, error: null };
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+  handleReset = () => {
+    localStorage.clear();
+    window.location.reload();
+  };
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="auth-shell">
+          <section className="auth-card" style={{ maxWidth: '560px', borderColor: 'rgba(239,68,68,0.3)' }}>
+            <div className="brand-mark" style={{ background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}><Users size={30} /></div>
+            <p className="eyebrow" style={{ color: '#ef4444' }}>Rendering Error</p>
+            <h1>工作区渲染发生异常</h1>
+            <p className="muted">前端界面在绘制元素时遇到了不可恢复的错误。这可能是由于加载了损坏的或异常的数据格式引起的。</p>
+            <pre style={{ background: 'rgba(0,0,0,0.3)', padding: '1rem', borderRadius: '12px', fontSize: '0.8rem', color: '#fca5a5', overflow: 'auto', textAlign: 'left', maxHeight: '180px' }}>
+              {(this.state.error as any)?.stack || String(this.state.error)}
+            </pre>
+            <button className="primary danger-btn" onClick={this.handleReset} style={{ width: '100%', marginTop: '1.25rem' }}>
+              重置工作区本地缓存并重新加载
+            </button>
+          </section>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function MainApp() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [user, setUser] = useState<User | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -188,11 +229,21 @@ export default function App() {
       if (mappedId && list.some(s => s.session_id === mappedId)) {
         const next = await api.getSession(token, mappedId);
         setSession(next);
-        if (next.conversation_id) void refreshHistory(next.session_id);
+        if (next.conversation_id) {
+          void refreshHistory(next.session_id);
+          if (next.status === 'running') {
+            startStream(next.session_id);
+          }
+        }
       } else if (list.length > 0) {
         const latest = list[0];
         setSession(latest);
-        if (latest.conversation_id) void refreshHistory(latest.session_id);
+        if (latest.conversation_id) {
+          void refreshHistory(latest.session_id);
+          if (latest.status === 'running') {
+            startStream(latest.session_id);
+          }
+        }
       } else {
         setSession(null);
         setEvents([]);
@@ -222,7 +273,7 @@ export default function App() {
     }
   }
 
-  // Load admin tab data dynamically
+  // Load admin data dynamically
   async function loadAdminData(tab = adminTab) {
     if (!token) return;
     setBusy(true);
@@ -622,7 +673,9 @@ export default function App() {
 
   // Shell Terminal logs extractor
   const terminalLogs = useMemo(() => {
+    if (!Array.isArray(events)) return [];
     return events.filter(e => {
+      if (!e) return false;
       const kind = e.kind || '';
       return kind.includes('ActionEvent') || kind.includes('ObservationEvent') || kind === 'agent.result' || kind === 'agent.error';
     });
@@ -631,14 +684,18 @@ export default function App() {
   // File tree builder
   const fileTreeRoot = useMemo(() => {
     const root: TreeNode = { name: '', path: '', isDir: true, children: {} };
+    if (!Array.isArray(projectFiles)) return root;
     for (const f of projectFiles) {
+      if (!f || !f.path) continue;
       const parts = f.path.split('/');
       let current = root;
       for (let i = 0; i < parts.length; i++) {
         const part = parts[i];
+        if (!part) continue;
         const isLast = i === parts.length - 1;
         const isDir = !isLast ? true : f.is_dir;
         const currentPath = parts.slice(0, i + 1).join('/');
+        if (!current.children) current.children = {};
         if (!current.children[part]) {
           current.children[part] = {
             name: part,
@@ -654,8 +711,9 @@ export default function App() {
   }, [projectFiles]);
 
   function renderFileTreeNode(node: TreeNode, depth = 0) {
+    if (!node) return null;
     const isExpanded = expandedDirs[node.path] ?? false;
-    const hasChildren = Object.keys(node.children).length > 0;
+    const hasChildren = node.children ? Object.keys(node.children).length > 0 : false;
     const isSelected = selectedFilePath === node.path;
 
     function toggleExpand() {
@@ -686,15 +744,16 @@ export default function App() {
                 <FileCode size={14} />
               )}
             </span>
-            <span className="tree-name">{node.name}</span>
+            <span className="tree-name">{node.name || ''}</span>
           </div>
         )}
-        {node.isDir && (depth === 0 || isExpanded) && (
+        {node.isDir && (depth === 0 || isExpanded) && node.children && (
           <div className="tree-children">
             {Object.values(node.children)
+              .filter(Boolean)
               .sort((a, b) => {
                 if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-                return a.name.localeCompare(b.name);
+                return (a.name || '').localeCompare(b.name || '');
               })
               .map(child => renderFileTreeNode(child, depth + 1))}
           </div>
@@ -1229,6 +1288,7 @@ export default function App() {
                 <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
                 <div className="timeline">
                   {events.map((event, index) => {
+                    if (!event) return null;
                     const isToolCall = String(event.kind || '').includes('ActionEvent') || String(event.kind || '').includes('ObservationEvent');
                     const eventId = event.id || `local-${index}`;
                     const isCollapsed = collapsedTools[eventId] ?? true;
@@ -1365,5 +1425,13 @@ export default function App() {
         </section>
       )}
     </main>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <MainApp />
+    </ErrorBoundary>
   );
 }
