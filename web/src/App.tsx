@@ -53,6 +53,7 @@ function eventTitle(event: TimelineEvent): string {
   if (kind === 'message') return '用户消息';
   if (kind === 'agent.result') return '运行结果';
   if (kind === 'agent.error') return '运行错误';
+  if (String(kind).includes('SystemPromptEvent')) return '系统提示词';
   if (String(kind).includes('Message') || String(kind).includes('MessageEvent') || String(kind).includes('MessageAction')) return '模型消息';
   if (String(kind).includes('Action')) return '工具调用';
   if (String(kind).includes('Observation')) return '工具结果';
@@ -76,6 +77,7 @@ function toolNameMeta(event: TimelineEvent): string {
   const raw = event.data?.raw as any;
   if (!raw) return '';
 
+  if (String(event.kind).includes('SystemPromptEvent')) return 'system prompt';
   if (raw.command) return `command: ${raw.command}`;
   if (raw.path) return `path: ${raw.path}`;
   if (raw.code) return `code: ${raw.code.substring(0, 60)}`;
@@ -1352,8 +1354,9 @@ function MainApp() {
                 <div className="timeline">
                   {events.map((event, index) => {
                     if (!event) return null;
-                    const isToolCall = (String(event.kind || '').includes('Action') || String(event.kind || '').includes('Observation')) &&
-                                       !String(event.kind || '').includes('Message');
+                    const isToolCall = ((String(event.kind || '').includes('Action') || String(event.kind || '').includes('Observation')) &&
+                                       !String(event.kind || '').includes('Message')) ||
+                                       String(event.kind || '').includes('SystemPromptEvent');
                     const eventId = event.id || `local-${index}`;
                     const isCollapsed = collapsedTools[eventId] ?? true;
 
