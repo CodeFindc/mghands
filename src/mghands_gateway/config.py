@@ -14,6 +14,11 @@ class Settings(BaseSettings):
         description='Gateway-managed data root for database, users, projects, and shared skills.',
     )
 
+    host_data_root: Path | None = Field(
+        default=None,
+        description='Optional host-side data root path mapping for Docker-out-of-Docker deployments.',
+    )
+
     sandbox_image: str = Field(
         default='docker.all-hands.dev/all-hands-ai/runtime:1.29.0',
         description='Docker image containing OpenHands SDK/agent-server standard APIs.',

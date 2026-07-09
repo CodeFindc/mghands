@@ -121,6 +121,14 @@ class DockerSandboxBackend:
         sandbox_cpus = sandbox_cpus or self.settings.sandbox_cpus
         sandbox_pids_limit = sandbox_pids_limit if sandbox_pids_limit is not None else self.settings.sandbox_pids_limit
 
+        host_workspace_dir = workspace_dir
+        if self.settings.host_data_root:
+            try:
+                rel_path = workspace_dir.relative_to(self.settings.data_root.resolve())
+                host_workspace_dir = self.settings.host_data_root.resolve() / rel_path
+            except ValueError:
+                pass
+
         container_args = [
             'run',
             '-d',
@@ -131,7 +139,7 @@ class DockerSandboxBackend:
             '-e',
             f'OH_SESSION_API_KEYS_0={session_api_key}',
             '-v',
-            f'{workspace_dir}:{self.settings.sandbox_workspace_mount_path}',
+            f'{host_workspace_dir}:{self.settings.sandbox_workspace_mount_path}',
             '--memory',
             sandbox_memory_limit,
             '--cpus',
