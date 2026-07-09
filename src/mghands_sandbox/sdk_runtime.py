@@ -154,28 +154,31 @@ class SDKRuntime:
         if message.run:
             runtime.info.status = ConversationStatus.RUNNING
             runtime.info.updated_at = utc_now()
-            try:
-                result = await asyncio.to_thread(
-                    self._run_sdk_conversation, runtime, message
-                )
-                runtime.info.status = ConversationStatus.COMPLETED
-                runtime.info.updated_at = utc_now()
-                await self._append_event(
-                    conversation_id,
-                    'agent.result',
-                    {'result': _jsonable(result)},
-                )
-            except Exception as exc:
-                self._last_error = str(exc)
-                runtime.info.status = ConversationStatus.ERROR
-                runtime.info.error = str(exc)
-                runtime.info.updated_at = utc_now()
-                await self._append_event(
-                    conversation_id,
-                    'agent.error',
-                    {'error': str(exc)},
-                )
-                raise SDKRunError(str(exc)) from exc
+            
+            async def _run_bg() -> None:
+                try:
+                    result = await asyncio.to_thread(
+                        self._run_sdk_conversation, runtime, message
+                    )
+                    runtime.info.status = ConversationStatus.COMPLETED
+                    runtime.info.updated_at = utc_now()
+                    await self._append_event(
+                        conversation_id,
+                        'agent.result',
+                        {'result': _jsonable(result)},
+                    )
+                except Exception as exc:
+                    self._last_error = str(exc)
+                    runtime.info.status = ConversationStatus.ERROR
+                    runtime.info.error = str(exc)
+                    runtime.info.updated_at = utc_now()
+                    await self._append_event(
+                        conversation_id,
+                        'agent.error',
+                        {'error': str(exc)},
+                    )
+            
+            asyncio.create_task(_run_bg())
         return runtime.info
 
     async def get_runtime_state(self, conversation_id: str) -> ConversationRuntimeState:

@@ -251,6 +251,14 @@ function MainApp() {
     }
   }, [selectedFilePath, selectedProjectId, token]);
 
+  // Automatically watch and sync active session running state to trigger streaming and busy loader
+  useEffect(() => {
+    if (session && session.status === 'running') {
+      setBusy(true);
+      startStream(session.session_id);
+    }
+  }, [session?.session_id, session?.status]);
+
   async function loadSessions(projId: string) {
     try {
       const list = await api.listProjectSessions(token, projId);
@@ -474,15 +482,11 @@ function MainApp() {
     setEvents((items) => [...items, { kind: 'message', timestamp: new Date().toISOString(), data: { message: text } }]);
     setBusy(true);
     try {
-      startStream(active.session_id);
       await api.execute(token, active.session_id, text);
       const next = await api.getSession(token, active.session_id);
       setSession(next);
-      await refreshHistory(active.session_id);
-      if (next.conversation_id) startStream(active.session_id);
     } catch (error) {
       setNotice(errorMessage(error));
-    } finally {
       setBusy(false);
     }
   }
@@ -510,9 +514,16 @@ function MainApp() {
           if (event.id && items.some((item) => item.id === event.id)) return items;
           return [...items, event];
         });
+        if (event.kind === 'agent.result' || event.kind === 'agent.error') {
+          setBusy(false);
+          void api.getSession(token, sessionId).then(setSession).catch(console.error);
+        }
       }, controller.signal)
       .catch((error) => {
-        if (!controller.signal.aborted) setNotice(errorMessage(error));
+        if (!controller.signal.aborted) {
+          setNotice(errorMessage(error));
+          setBusy(false);
+        }
       })
       .finally(() => setStreaming(false));
   }

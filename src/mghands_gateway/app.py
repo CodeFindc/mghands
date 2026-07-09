@@ -840,6 +840,7 @@ async def _event_stream(
     after_seen = after is None
     idle_for = 0.0
     heartbeat_for = 0.0
+    offset = 0
     while idle_for < settings.sse_idle_timeout_seconds:
         if await request.is_disconnected():
             return
@@ -850,11 +851,13 @@ async def _event_stream(
             _require_sandbox_url(record),
             _session_api_key_value(record),
             record.conversation_id,
+            page_id=str(offset) if offset > 0 else None,
             limit=100,
         )
         emitted = False
         if isinstance(page, dict):
-            for event in page.get('items', []):
+            items = page.get('items', [])
+            for event in items:
                 event_id = str(event.get('id') or '')
                 if not event_id or event_id in seen:
                     continue
@@ -867,6 +870,15 @@ async def _event_stream(
                 await store.save(record)
                 emitted = True
                 yield _sse(event='message', data=event, event_id=event_id).encode('utf-8')
+            
+            if items:
+                offset += len(items)
+                if len(items) < 100 and not after_seen:
+                    after_seen = True
+            else:
+                if not after_seen:
+                    after_seen = True
+
         if record.status in {SessionStatus.ERROR, SessionStatus.DELETED}:
             terminal_type = 'error' if record.status == SessionStatus.ERROR else 'cancelled'
             terminal = TerminalEvent(
