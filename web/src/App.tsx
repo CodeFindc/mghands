@@ -70,6 +70,35 @@ function eventPreview(event: TimelineEvent): string {
   const message = data.message || data.content || data.result || data.error || data.detail;
   if (typeof preview === 'string' && preview.trim()) return preview;
   if (typeof message === 'string' && message.trim()) return message;
+
+  const raw = data.raw as any;
+  if (raw && typeof raw === 'object') {
+    if (raw.thought || raw.command || raw.code || raw.path) {
+      const parts: string[] = [];
+      if (raw.thought) parts.push(raw.thought);
+      if (raw.command) parts.push(`$ ${raw.command}`);
+      if (raw.code) parts.push(raw.code);
+      if (raw.path) parts.push(`File: ${raw.path}`);
+      if (parts.length > 0) return parts.join('\n');
+    }
+    if (raw.content) {
+      let res = raw.content;
+      if (raw.exit_code !== undefined && raw.exit_code !== 0) {
+        res += `\n[Exit Code: ${raw.exit_code}]`;
+      }
+      return res;
+    }
+    if (raw.action && typeof raw.action === 'object') {
+      const parts: string[] = [];
+      if (raw.action.thought) parts.push(raw.action.thought);
+      if (raw.action.command) parts.push(`$ ${raw.action.command}`);
+      if (parts.length > 0) return parts.join('\n');
+    }
+    if (raw.observation && typeof raw.observation === 'object') {
+      if (raw.observation.content) return raw.observation.content;
+    }
+  }
+
   return JSON.stringify(data, null, 2);
 }
 
