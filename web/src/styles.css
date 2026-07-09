@@ -235,9 +235,11 @@ button:hover:not(:disabled) {
 }
 
 .project-list {
+  flex: 1;
+  min-height: 0;
   display: grid;
   gap: 0.5rem;
-  overflow: auto;
+  overflow-y: auto;
   padding-right: 0.2rem;
 }
 
