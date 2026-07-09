@@ -168,6 +168,7 @@ button:hover:not(:disabled) {
   border-right: 1px solid rgba(148, 163, 184, 0.14);
   background: rgba(4, 12, 24, 0.7);
   backdrop-filter: blur(20px);
+  overflow: hidden;
 }
 
 .sidebar-head {
