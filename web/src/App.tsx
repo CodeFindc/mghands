@@ -393,6 +393,7 @@ export default function App() {
     setEvents((items) => [...items, { kind: 'message', timestamp: new Date().toISOString(), data: { message: text } }]);
     setBusy(true);
     try {
+      startStream(active.session_id);
       await api.execute(token, active.session_id, text);
       const next = await api.getSession(token, active.session_id);
       setSession(next);

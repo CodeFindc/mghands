@@ -309,7 +309,7 @@ $env:MGHANDS_CONVERSATION_START_POLL_SECONDS="2"
 
 ```powershell
 cd D:\iso\Mghands
-python -m uvicorn mghands_gateway.app:app --host 0.0.0.0 --port 8080 --reload
+python -m uvicorn mghands_gateway.app:app --host 0.0.0.0 --port 8080 --reload --reload-exclude "*.sqlite3" --reload-exclude ".mghands/*"
 ```
 
 普通运行：

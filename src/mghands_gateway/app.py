@@ -785,7 +785,13 @@ async def stream(
     _validate_id_or_400(session_id)
     record = await _get_record_or_404(store, session_id, current_user)
     if not record.conversation_id:
-        raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
+        for _ in range(30):
+            await asyncio.sleep(1.0)
+            record = await _get_record_or_404(store, session_id, current_user)
+            if record.conversation_id:
+                break
+        else:
+            raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
     event_id = after or request.headers.get('last-event-id')
     generator = _event_stream(session_id, event_id, store, agent_client, settings, request)
     return StreamingResponse(generator, media_type='text/event-stream')
