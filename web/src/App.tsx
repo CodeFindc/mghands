@@ -14,9 +14,16 @@ import {
   Sparkles,
   TerminalSquare,
   Wrench,
+  Users,
+  Cpu,
+  Trash2,
+  ArrowLeft,
+  Settings,
+  PlusCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { ApiError, api, errorMessage } from './api';
-import type { Project, Session, SkillCatalogItem, TimelineEvent, User } from './types';
+import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings } from './types';
 
 const TOKEN_KEY = 'mghands.access_token';
 const SESSION_MAP_KEY = 'mghands.project_sessions';
@@ -84,6 +91,40 @@ export default function App() {
   const [sessionMap, setSessionMap] = useState<SessionMap>(() => loadSessionMap());
   const abortRef = useRef<AbortController | null>(null);
 
+  // Admin View States
+  const [isAdminView, setIsAdminView] = useState(false);
+  const [adminTab, setAdminTab] = useState<'users' | 'resources' | 'skills' | 'models'>('users');
+  const [adminUsers, setAdminUsers] = useState<User[]>([]);
+  const [adminSettings, setAdminSettings] = useState<SystemSettings>({});
+  const [adminSkills, setAdminSkills] = useState<SkillCatalogItem[]>([]);
+  const [adminModels, setAdminModels] = useState<LLMModel[]>([]);
+
+  // User tab form states
+  const [newUsername, setNewUsername] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState<'admin' | 'user'>('user');
+  const [resetPassUserId, setResetPassUserId] = useState<string | null>(null);
+  const [resetPassValue, setResetPassValue] = useState('');
+
+  // Settings tab form states
+  const [settingsImage, setSettingsImage] = useState('');
+  const [settingsMemory, setSettingsMemory] = useState('');
+  const [settingsCpus, setSettingsCpus] = useState('');
+  const [settingsPids, setSettingsPids] = useState('');
+
+  // Skills tab form states
+  const [uploadSkillName, setUploadSkillName] = useState('');
+  const [uploadSkillFile, setUploadSkillFile] = useState<File | null>(null);
+
+  // Models tab form states
+  const [editingModel, setEditingModel] = useState<Partial<LLMModel> | null>(null);
+  const [modelName, setModelName] = useState('');
+  const [modelProvider, setModelProvider] = useState('');
+  const [modelModel, setModelModel] = useState('');
+  const [modelBaseUrl, setModelBaseUrl] = useState('');
+  const [modelApiKey, setModelApiKey] = useState('');
+  const [modelIsDefault, setModelIsDefault] = useState(false);
+
   const selectedProject = useMemo(
     () => projects.find((project) => project.project_id === selectedProjectId) || null,
     [projects, selectedProjectId],
@@ -97,7 +138,7 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    if (!token || !selectedProjectId) return;
+    if (!token || !selectedProjectId || isAdminView) return;
     const sessionId = sessionMap[selectedProjectId];
     if (!sessionId) {
       setSession(null);
@@ -114,7 +155,49 @@ export default function App() {
         setSession(null);
         setEvents([]);
       });
-  }, [selectedProjectId, sessionMap, token]);
+  }, [selectedProjectId, sessionMap, token, isAdminView]);
+
+  // Load admin tab data dynamically
+  async function loadAdminData(tab = adminTab) {
+    if (!token) return;
+    setBusy(true);
+    try {
+      if (tab === 'users') {
+        const list = await api.adminListUsers(token);
+        setAdminUsers(list);
+      } else if (tab === 'resources') {
+        const data = await api.adminGetSettings(token);
+        setAdminSettings(data);
+      } else if (tab === 'skills') {
+        const data = await api.adminListSkills(token);
+        setAdminSkills(data);
+      } else if (tab === 'models') {
+        const list = await api.adminListModels(token);
+        setAdminModels(list);
+      }
+      setNotice(null);
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (isAdminView) {
+      void loadAdminData(adminTab);
+    }
+  }, [isAdminView, adminTab]);
+
+  // Prefill settings form
+  useEffect(() => {
+    if (adminTab === 'resources' && adminSettings) {
+      setSettingsImage(adminSettings.sandbox_image || '');
+      setSettingsMemory(adminSettings.sandbox_memory_limit || '');
+      setSettingsCpus(adminSettings.sandbox_cpus || '');
+      setSettingsPids(adminSettings.sandbox_pids_limit || '');
+    }
+  }, [adminSettings, adminTab]);
 
   async function bootstrap(nextToken: string) {
     try {
@@ -162,6 +245,7 @@ export default function App() {
     setProjects([]);
     setSession(null);
     setEvents([]);
+    setIsAdminView(false);
   }
 
   async function createProject(event: FormEvent) {
@@ -283,6 +367,190 @@ export default function App() {
       .finally(() => setStreaming(false));
   }
 
+  // Admin Tab Action Handlers
+  async function handleCreateUser(e: FormEvent) {
+    e.preventDefault();
+    if (!token || !newUsername.trim() || !newUserPassword.trim()) return;
+    setBusy(true);
+    try {
+      await api.adminCreateUser(token, {
+        username: newUsername.trim(),
+        password: newUserPassword.trim(),
+        role: newUserRole,
+        enabled: true,
+      });
+      setNewUsername('');
+      setNewUserPassword('');
+      setNewUserRole('user');
+      setNotice('用户已创建');
+      await loadAdminData('users');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleUserEnabled(userId: string, currentEnabled: boolean) {
+    if (!token) return;
+    setBusy(true);
+    try {
+      await api.adminUpdateUser(token, userId, { enabled: !currentEnabled });
+      setNotice('用户状态已更新');
+      await loadAdminData('users');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleUserRole(userId: string, currentRole: 'admin' | 'user') {
+    if (!token) return;
+    setBusy(true);
+    try {
+      await api.adminUpdateUser(token, userId, { role: currentRole === 'admin' ? 'user' : 'admin' });
+      setNotice('用户角色已更新');
+      await loadAdminData('users');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResetPassword(e: FormEvent) {
+    e.preventDefault();
+    if (!token || !resetPassUserId || !resetPassValue.trim()) return;
+    setBusy(true);
+    try {
+      await api.adminResetPassword(token, resetPassUserId, resetPassValue.trim());
+      setResetPassUserId(null);
+      setResetPassValue('');
+      setNotice('密码已成功重置');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveSettings(e: FormEvent) {
+    e.preventDefault();
+    if (!token) return;
+    setBusy(true);
+    try {
+      await api.adminSaveSettings(token, {
+        sandbox_image: settingsImage.trim(),
+        sandbox_memory_limit: settingsMemory.trim(),
+        sandbox_cpus: settingsCpus.trim(),
+        sandbox_pids_limit: settingsPids.trim(),
+      });
+      setNotice('资源限制参数已保存');
+      await loadAdminData('resources');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleUploadSkill(e: FormEvent) {
+    e.preventDefault();
+    if (!token || !uploadSkillName.trim() || !uploadSkillFile) return;
+    setBusy(true);
+    try {
+      await api.adminUploadSkill(token, uploadSkillName.trim(), uploadSkillFile);
+      setUploadSkillName('');
+      setUploadSkillFile(null);
+      const fileInput = document.getElementById('skill-file-input') as HTMLInputElement;
+      if (fileInput) fileInput.value = '';
+      setNotice('共享技能已成功上传并就绪');
+      await loadAdminData('skills');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteSkill(skillName: string) {
+    if (!token || !confirm(`确定要删除共享技能 "${skillName}" 吗？`)) return;
+    setBusy(true);
+    try {
+      await api.adminDeleteSkill(token, skillName);
+      setNotice('技能已从共享仓库中删除');
+      await loadAdminData('skills');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveModel(e: FormEvent) {
+    e.preventDefault();
+    if (!token || !modelName.trim() || !modelProvider.trim() || !modelModel.trim()) return;
+    setBusy(true);
+    try {
+      const payload: any = {
+        name: modelName.trim(),
+        provider: modelProvider.trim(),
+        model: modelModel.trim(),
+        base_url: modelBaseUrl.trim() || null,
+        is_default: modelIsDefault,
+      };
+      if (modelApiKey.trim()) {
+        payload.api_key = modelApiKey.trim();
+      }
+
+      if (editingModel && editingModel.model_id) {
+        await api.adminUpdateModel(token, editingModel.model_id, payload);
+        setNotice('模型集成配置已更新');
+      } else {
+        await api.adminCreateModel(token, payload);
+        setNotice('已成功添加新模型接入配置');
+      }
+
+      setEditingModel(null);
+      setModelName('');
+      setModelProvider('');
+      setModelModel('');
+      setModelBaseUrl('');
+      setModelApiKey('');
+      setModelIsDefault(false);
+      await loadAdminData('models');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteModel(modelId: string) {
+    if (!token || !confirm('确定要删除此模型配置吗？')) return;
+    setBusy(true);
+    try {
+      await api.adminDeleteModel(token, modelId);
+      setNotice('模型配置已删除');
+      await loadAdminData('models');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEditModel(model: LLMModel) {
+    setEditingModel(model);
+    setModelName(model.name);
+    setModelProvider(model.provider);
+    setModelModel(model.model);
+    setModelBaseUrl(model.base_url || '');
+    setModelApiKey('');
+    setModelIsDefault(model.is_default);
+  }
+
   if (!token) {
     return (
       <main className="auth-shell">
@@ -323,112 +591,474 @@ export default function App() {
           <button className="icon-button" onClick={logout} title="退出登录"><LogOut size={18} /></button>
         </div>
 
-        <form className="project-form" onSubmit={createProject}>
-          <input placeholder="新项目名称" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-          <button disabled={busy || !projectName.trim()}><FolderPlus size={17} /></button>
-        </form>
-
-        <div className="skill-strip">
-          <span><Sparkles size={15} /> 默认技能</span>
-          <div className="skill-list">
-            {skills.length ? skills.map((skill) => (
-              <button
-                key={skill.name}
-                className={selectedSkillNames.includes(skill.name) ? 'chip selected' : 'chip'}
-                onClick={() => setSelectedSkillNames((items) => items.includes(skill.name) ? items.filter((item) => item !== skill.name) : [...items, skill.name])}
-                type="button"
-              >
-                {skill.name}
+        {isAdminView ? (
+          <>
+            <div className="sidebar-title">系统管理</div>
+            <nav className="project-list">
+              <button className={adminTab === 'users' ? 'project active' : 'project'} onClick={() => setAdminTab('users')}>
+                <Users size={16} /> <span>用户管理</span>
               </button>
-            )) : <span className="muted">未配置共享技能</span>}
-          </div>
-          {defaultSkills.length > 0 && <small>系统默认: {defaultSkills.join(', ')}</small>}
-        </div>
+              <button className={adminTab === 'resources' ? 'project active' : 'project'} onClick={() => setAdminTab('resources')}>
+                <Cpu size={16} /> <span>资源配置</span>
+              </button>
+              <button className={adminTab === 'skills' ? 'project active' : 'project'} onClick={() => setAdminTab('skills')}>
+                <Sparkles size={16} /> <span>技能仓库</span>
+              </button>
+              <button className={adminTab === 'models' ? 'project active' : 'project'} onClick={() => setAdminTab('models')}>
+                <Settings size={16} /> <span>模型集成</span>
+              </button>
+            </nav>
+            <div className="sidebar-footer" style={{ marginTop: 'auto', width: '100%' }}>
+              <button className="primary-back-btn" onClick={() => setIsAdminView(false)}>
+                <ArrowLeft size={16} /> 返回工作区
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <form className="project-form" onSubmit={createProject}>
+              <input placeholder="新项目名称" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+              <button disabled={busy || !projectName.trim()}><FolderPlus size={17} /></button>
+            </form>
 
-        <nav className="project-list">
-          {projects.map((project) => (
-            <button
-              key={project.project_id}
-              className={project.project_id === selectedProjectId ? 'project active' : 'project'}
-              onClick={() => setSelectedProjectId(project.project_id)}
-            >
-              <span>{project.name}</span>
-              <small>{new Date(project.updated_at).toLocaleString()}</small>
-            </button>
-          ))}
-          {!projects.length && <div className="empty-mini">创建第一个项目开始使用</div>}
-        </nav>
+            <div className="skill-strip">
+              <span><Sparkles size={15} /> 默认技能</span>
+              <div className="skill-list">
+                {skills.length ? skills.map((skill) => (
+                  <button
+                    key={skill.name}
+                    className={selectedSkillNames.includes(skill.name) ? 'chip selected' : 'chip'}
+                    onClick={() => setSelectedSkillNames((items) => items.includes(skill.name) ? items.filter((item) => item !== skill.name) : [...items, skill.name])}
+                    type="button"
+                  >
+                    {skill.name}
+                  </button>
+                )) : <span className="muted">未配置共享技能</span>}
+              </div>
+              {defaultSkills.length > 0 && <small>系统默认: {defaultSkills.join(', ')}</small>}
+            </div>
+
+            <nav className="project-list">
+              {projects.map((project) => (
+                <button
+                  key={project.project_id}
+                  className={project.project_id === selectedProjectId ? 'project active' : 'project'}
+                  onClick={() => setSelectedProjectId(project.project_id)}
+                >
+                  <span>{project.name}</span>
+                  <small>{new Date(project.updated_at).toLocaleString()}</small>
+                </button>
+              ))}
+              {!projects.length && <div className="empty-mini">创建第一个项目开始使用</div>}
+            </nav>
+
+            {user?.role === 'admin' && (
+              <div className="sidebar-footer" style={{ marginTop: 'auto', width: '100%' }}>
+                <button className="primary-admin-btn" onClick={() => setIsAdminView(true)}>
+                  <Settings size={16} /> 系统管理面板
+                </button>
+              </div>
+            )}
+          </>
+        )}
       </aside>
 
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">Project Workspace</p>
-            <h1>{selectedProject?.name || '选择或创建项目'}</h1>
-          </div>
-          <div className="session-actions">
-            <span className={`status ${session?.status || 'idle'}`}><RadioTower size={15} /> {statusLabel(session?.status)}</span>
-            <button onClick={() => void ensureSession()} disabled={!selectedProject || busy}><Plus size={17} /> 新建会话</button>
-            <button onClick={stopSession} disabled={!session || busy}><CircleStop size={17} /> 停止</button>
-            <button onClick={() => session && startStream(session.session_id)} disabled={!session?.conversation_id || streaming}><RadioTower size={17} /> 监听</button>
-          </div>
-        </header>
+      {isAdminView ? (
+        <section className="workspace">
+          <header className="topbar">
+            <div>
+              <p className="eyebrow">System Administration</p>
+              <h1>
+                {adminTab === 'users'
+                  ? '用户账户管理'
+                  : adminTab === 'resources'
+                  ? '沙箱资源限制配置'
+                  : adminTab === 'skills'
+                  ? '共享技能仓库'
+                  : '接入模型配置'}
+              </h1>
+            </div>
+          </header>
 
-        {notice && <div className="notice">{notice}</div>}
+          {notice && <div className="notice">{notice}</div>}
 
-        <div className="content-grid">
-          <section className="chat-panel">
-            <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
-            <div className="timeline">
-              {events.map((event, index) => (
-                <article className={`event-card ${String(event.kind || '').includes('error') ? 'error' : ''}`} key={`${event.id || 'local'}-${index}`}>
-                  <div className="event-meta">
-                    <strong>{eventTitle(event)}</strong>
-                    <span>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</span>
+          <div className="admin-content-shell">
+            {adminTab === 'users' && (
+              <div className="admin-grid">
+                <div className="admin-card">
+                  <div className="panel-title"><Users size={18} /> 用户列表</div>
+                  <div className="admin-table-container">
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>用户名</th>
+                          <th>角色</th>
+                          <th>状态</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminUsers.map((u) => (
+                          <tr key={u.user_id}>
+                            <td>{u.username}</td>
+                            <td>
+                              <button
+                                className={`role-badge ${u.role}`}
+                                onClick={() => handleToggleUserRole(u.user_id, u.role)}
+                                disabled={busy || u.user_id === user?.user_id}
+                                title="点击切换角色"
+                              >
+                                {u.role === 'admin' ? '管理员' : '普通用户'}
+                              </button>
+                            </td>
+                            <td>
+                              <button
+                                className={`status-badge ${u.enabled ? 'active' : 'disabled'}`}
+                                onClick={() => handleToggleUserEnabled(u.user_id, u.enabled)}
+                                disabled={busy || u.user_id === user?.user_id}
+                                title="点击启用/禁用"
+                              >
+                                {u.enabled ? '启用中' : '已禁用'}
+                              </button>
+                            </td>
+                            <td>
+                              <button
+                                className="text-action-btn"
+                                onClick={() => setResetPassUserId(u.user_id)}
+                              >
+                                重置密码
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
-                  <pre>{eventPreview(event)}</pre>
-                </article>
-              ))}
-              {!events.length && (
-                <div className="empty-state">
-                  <TerminalSquare size={42} />
-                  <h2>还没有任务事件</h2>
-                  <p>输入一个任务，Mghands 会创建沙箱会话并把 OpenHands 事件映射到这里。</p>
                 </div>
-              )}
-            </div>
-            <form className="composer" onSubmit={runPrompt}>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如: 检查当前工作区结构并运行测试" />
-              <button className="primary" disabled={!selectedProject || busy || !prompt.trim()}>
-                {busy ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}
-                发送
-              </button>
-            </form>
-          </section>
 
-          <aside className="inspector">
-            <div className="panel-title"><Wrench size={18} /> 会话详情</div>
-            <dl>
-              <dt>Session ID</dt>
-              <dd>{session?.session_id || '未创建'}</dd>
-              <dt>Conversation</dt>
-              <dd>{session?.conversation_id || '等待首次执行'}</dd>
-              <dt>Sandbox</dt>
-              <dd>{session?.sandbox_id || session?.sandbox_url || '未启动'}</dd>
-              <dt>Last Event</dt>
-              <dd>{session?.last_event_id || lastEventId || '无'}</dd>
-            </dl>
-            {session?.error && <div className="notice danger">{session.error}</div>}
-            <div className="capability-card">
-              <CheckCircle2 size={20} />
-              <div>
-                <strong>已适配 API</strong>
-                <p>登录、项目、技能目录、会话、执行、历史与 SSE 流。</p>
+                <div className="admin-sidebar-forms">
+                  <div className="admin-card">
+                    <div className="panel-title"><PlusCircle size={18} /> 创建新用户</div>
+                    <form className="stack" onSubmit={handleCreateUser}>
+                      <label>
+                        用户名
+                        <input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="输入登录名" required />
+                      </label>
+                      <label>
+                        密码
+                        <input value={newUserPassword} onChange={(e) => setNewUserPassword(e.target.value)} type="password" placeholder="输入密码（至少8位）" required />
+                      </label>
+                      <label>
+                        角色
+                        <select className="premium-select" value={newUserRole} onChange={(e) => setNewUserRole(e.target.value as 'admin' | 'user')}>
+                          <option value="user">普通用户</option>
+                          <option value="admin">系统管理员</option>
+                        </select>
+                      </label>
+                      <button className="primary" disabled={busy}>创建用户</button>
+                    </form>
+                  </div>
+
+                  {resetPassUserId && (
+                    <div className="admin-card alert-card">
+                      <div className="panel-title">重置用户密码</div>
+                      <form className="stack" onSubmit={handleResetPassword}>
+                        <label>
+                          新密码
+                          <input value={resetPassValue} onChange={(e) => setResetPassValue(e.target.value)} type="password" placeholder="输入新密码" required />
+                        </label>
+                        <div className="btn-group">
+                          <button className="primary danger-btn" disabled={busy}>确认重置</button>
+                          <button className="secondary-btn" type="button" onClick={() => setResetPassUserId(null)}>取消</button>
+                        </div>
+                      </form>
+                    </div>
+                  )}
+                </div>
               </div>
+            )}
+
+            {adminTab === 'resources' && (
+              <div className="admin-card max-width-card">
+                <div className="panel-title"><Cpu size={18} /> 容器沙箱物理资源配额</div>
+                <p className="muted">管理会话按需创建 Docker 容器时的物理资源上限限制与默认基础镜像配置。</p>
+                <form className="stack" onSubmit={handleSaveSettings}>
+                  <label>
+                    默认基础镜像 (sandbox_image)
+                    <input value={settingsImage} onChange={(e) => setSettingsImage(e.target.value)} placeholder="例如: mghands-sandbox:latest" required />
+                  </label>
+                  <label>
+                    内存上限限制 (sandbox_memory_limit)
+                    <input value={settingsMemory} onChange={(e) => setSettingsMemory(e.target.value)} placeholder="例如: 2g, 4g, 512m" required />
+                  </label>
+                  <label>
+                    CPU 核心限制 (sandbox_cpus)
+                    <input value={settingsCpus} onChange={(e) => setSettingsCpus(e.target.value)} placeholder="例如: 2, 4" required />
+                  </label>
+                  <label>
+                    进程数并发上限 (sandbox_pids_limit)
+                    <input value={settingsPids} onChange={(e) => setSettingsPids(e.target.value)} type="number" placeholder="例如: 512" required />
+                  </label>
+                  <button className="primary" disabled={busy}>保存修改</button>
+                </form>
+              </div>
+            )}
+
+            {adminTab === 'skills' && (
+              <div className="admin-grid">
+                <div className="admin-card">
+                  <div className="panel-title"><Sparkles size={18} /> 共享技能列表</div>
+                  <div className="admin-table-container">
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>技能名称</th>
+                          <th>触发词/Triggers</th>
+                          <th>第三方依赖</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminSkills.map((s) => (
+                          <tr key={s.name}>
+                            <td>
+                              <strong>{s.name}</strong>
+                              {s.metadata?.description && <p className="table-desc">{s.metadata.description}</p>}
+                            </td>
+                            <td>
+                              {s.metadata?.triggers?.length ? s.metadata.triggers.map(t => (
+                                <span className="chip mini" key={t}>{t}</span>
+                              )) : <span className="muted text-mini">无</span>}
+                            </td>
+                            <td>
+                              {s.metadata?.requires_dependencies ? (
+                                <span className="chip mini warning" title={s.metadata.dependencies?.join('\n')}>
+                                  {s.metadata.dependencies?.length} 个依赖
+                                </span>
+                              ) : <span className="muted text-mini">无</span>}
+                            </td>
+                            <td>
+                              <button
+                                className="text-action-btn danger"
+                                onClick={() => handleDeleteSkill(s.name)}
+                                disabled={busy}
+                              >
+                                <Trash2 size={15} /> 删除
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {!adminSkills.length && (
+                          <tr>
+                            <td colSpan={4} className="empty-table-row">暂未上传任何共享技能</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="admin-sidebar-forms">
+                  <div className="admin-card">
+                    <div className="panel-title">发布共享技能 ZIP</div>
+                    <p className="muted">上传打包好的技能文件夹 ZIP 压缩包，技能根目录下必须包含 `SKILL.md`。</p>
+                    <form className="stack" onSubmit={handleUploadSkill}>
+                      <label>
+                        技能唯一安全标识
+                        <input value={uploadSkillName} onChange={(e) => setUploadSkillName(e.target.value)} placeholder="英文/数字，如: my_git_helper" required />
+                      </label>
+                      <label>
+                        选择 ZIP 文件
+                        <input
+                          id="skill-file-input"
+                          type="file"
+                          accept=".zip"
+                          onChange={(e) => setUploadSkillFile(e.target.files?.[0] || null)}
+                          required
+                        />
+                      </label>
+                      <button className="primary" disabled={busy}>上传并解压发布</button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {adminTab === 'models' && (
+              <div className="admin-grid">
+                <div className="admin-card">
+                  <div className="panel-title"><Settings size={18} /> 模型配置列表</div>
+                  <div className="admin-table-container">
+                    <table className="admin-table">
+                      <thead>
+                        <tr>
+                          <th>显示名称</th>
+                          <th>接入提供商</th>
+                          <th>模型标识</th>
+                          <th>状态</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {adminModels.map((m) => (
+                          <tr key={m.model_id}>
+                            <td>
+                              <strong>{m.name}</strong>
+                              {m.base_url && <p className="table-desc">{m.base_url}</p>}
+                            </td>
+                            <td><span className="chip mini">{m.provider}</span></td>
+                            <td><code>{m.model}</code></td>
+                            <td>
+                              {m.is_default ? (
+                                <span className="chip mini default-badge">系统默认</span>
+                              ) : <span className="muted text-mini">-</span>}
+                            </td>
+                            <td>
+                              <div className="row-action-group">
+                                <button className="text-action-btn" onClick={() => startEditModel(m)}>编辑</button>
+                                <button className="text-action-btn danger" onClick={() => handleDeleteModel(m.model_id)}>删除</button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                        {!adminModels.length && (
+                          <tr>
+                            <td colSpan={5} className="empty-table-row">未配置任何大语言模型接入</td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="admin-sidebar-forms">
+                  <div className="admin-card">
+                    <div className="panel-title">
+                      {editingModel ? '修改模型接入' : '新增接入模型'}
+                    </div>
+                    <form className="stack" onSubmit={handleSaveModel}>
+                      <label>
+                        显示名称
+                        <input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="如: Ollama-Llama3" required />
+                      </label>
+                      <label>
+                        大模型提供商 (Provider)
+                        <input value={modelProvider} onChange={(e) => setModelProvider(e.target.value)} placeholder="openai, anthropic, ollama, ollama/..., custom" required />
+                      </label>
+                      <label>
+                        模型具体标识 (Model ID)
+                        <input value={modelModel} onChange={(e) => setModelModel(e.target.value)} placeholder="如: gpt-4o, llama3" required />
+                      </label>
+                      <label>
+                        自定义 Endpoint URL (Base URL)
+                        <input value={modelBaseUrl} onChange={(e) => setModelBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434" />
+                      </label>
+                      <label>
+                        API Key (密钥)
+                        <input value={modelApiKey} onChange={(e) => setModelApiKey(e.target.value)} type="password" placeholder={editingModel ? '留空表示不修改已有密钥' : '根据模型供应商提供，无需则留空'} />
+                      </label>
+                      <label className="checkbox-label">
+                        <input type="checkbox" checked={modelIsDefault} onChange={(e) => setModelIsDefault(e.target.checked)} />
+                        设为系统全局默认模型
+                      </label>
+                      <div className="btn-group">
+                        <button className="primary" disabled={busy}>保存配置</button>
+                        {editingModel && (
+                          <button
+                            className="secondary-btn"
+                            type="button"
+                            onClick={() => {
+                              setEditingModel(null);
+                              setModelName('');
+                              setModelProvider('');
+                              setModelModel('');
+                              setModelBaseUrl('');
+                              setModelApiKey('');
+                              setModelIsDefault(false);
+                            }}
+                          >
+                            取消
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      ) : (
+        <section className="workspace">
+          <header className="topbar">
+            <div>
+              <p className="eyebrow">Project Workspace</p>
+              <h1>{selectedProject?.name || '选择或创建项目'}</h1>
             </div>
-          </aside>
-        </div>
-      </section>
+            <div className="session-actions">
+              <span className={`status ${session?.status || 'idle'}`}><RadioTower size={15} /> {statusLabel(session?.status)}</span>
+              <button onClick={() => void ensureSession()} disabled={!selectedProject || busy}><Plus size={17} /> 新建会话</button>
+              <button onClick={stopSession} disabled={!session || busy}><CircleStop size={17} /> 停止</button>
+              <button onClick={() => session && startStream(session.session_id)} disabled={!session?.conversation_id || streaming}><RadioTower size={17} /> 监听</button>
+            </div>
+          </header>
+
+          {notice && <div className="notice">{notice}</div>}
+
+          <div className="content-grid">
+            <section className="chat-panel">
+              <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
+              <div className="timeline">
+                {events.map((event, index) => (
+                  <article className={`event-card ${String(event.kind || '').includes('error') ? 'error' : ''}`} key={`${event.id || 'local'}-${index}`}>
+                    <div className="event-meta">
+                      <strong>{eventTitle(event)}</strong>
+                      <span>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</span>
+                    </div>
+                    <pre>{eventPreview(event)}</pre>
+                  </article>
+                ))}
+                {!events.length && (
+                  <div className="empty-state">
+                    <TerminalSquare size={42} />
+                    <h2>还没有任务事件</h2>
+                    <p>输入一个任务，Mghands 会创建沙箱会话并把 OpenHands 事件映射到这里。</p>
+                  </div>
+                )}
+              </div>
+              <form className="composer" onSubmit={runPrompt}>
+                <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如: 检查当前工作区结构并运行测试" />
+                <button className="primary" disabled={!selectedProject || busy || !prompt.trim()}>
+                  {busy ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}
+                  发送
+                </button>
+              </form>
+            </section>
+
+            <aside className="inspector">
+              <div className="panel-title"><Wrench size={18} /> 会话详情</div>
+              <dl>
+                <dt>Session ID</dt>
+                <dd>{session?.session_id || '未创建'}</dd>
+                <dt>Conversation</dt>
+                <dd>{session?.conversation_id || '等待首次执行'}</dd>
+                <dt>Sandbox</dt>
+                <dd>{session?.sandbox_id || session?.sandbox_url || '未启动'}</dd>
+                <dt>Last Event</dt>
+                <dd>{session?.last_event_id || lastEventId || '无'}</dd>
+              </dl>
+              {session?.error && <div className="notice danger">{session.error}</div>}
+              <div className="capability-card">
+                <CheckCircle2 size={20} />
+                <div>
+                  <strong>已适配 API</strong>
+                  <p>登录、项目、技能目录、会话、执行、历史与 SSE 流。</p>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      )}
     </main>
   );
 }

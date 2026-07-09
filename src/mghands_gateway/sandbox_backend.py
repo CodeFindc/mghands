@@ -25,19 +25,56 @@ class DockerSandboxBackend:
         self.agent_client = agent_client
 
     async def create(
-        self, request: CreateSessionRequest, workspace_dir: Path | None = None
+        self,
+        request: CreateSessionRequest,
+        workspace_dir: Path | None = None,
+        store: object = None,
     ) -> SandboxHandle:
         sandbox_id = f'mghands-{request.session_id}'
         container_name = sandbox_id
         session_api_key = 'sk-mghands-' + secrets.token_urlsafe(24)
         workspace_dir = workspace_dir.resolve() if workspace_dir else self._prepare_workspace(request.session_id)
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(
-            self._run_container,
-            container_name,
-            session_api_key,
-            workspace_dir,
-        )
+
+        sandbox_image = self.settings.sandbox_image
+        sandbox_memory_limit = self.settings.sandbox_memory_limit
+        sandbox_cpus = self.settings.sandbox_cpus
+        sandbox_pids_limit = self.settings.sandbox_pids_limit
+
+        if store and hasattr(store, 'get_all_settings'):
+            try:
+                overrides = await store.get_all_settings()
+                if 'sandbox_image' in overrides:
+                    sandbox_image = overrides['sandbox_image']
+                if 'sandbox_memory_limit' in overrides:
+                    sandbox_memory_limit = overrides['sandbox_memory_limit']
+                if 'sandbox_cpus' in overrides:
+                    sandbox_cpus = overrides['sandbox_cpus']
+                if 'sandbox_pids_limit' in overrides:
+                    sandbox_pids_limit = int(overrides['sandbox_pids_limit'])
+            except Exception:
+                pass
+
+        import inspect
+        sig = inspect.signature(self._run_container)
+        if 'sandbox_image' in sig.parameters:
+            await asyncio.to_thread(
+                self._run_container,
+                container_name,
+                session_api_key,
+                workspace_dir,
+                sandbox_image=sandbox_image,
+                sandbox_memory_limit=sandbox_memory_limit,
+                sandbox_cpus=sandbox_cpus,
+                sandbox_pids_limit=sandbox_pids_limit,
+            )
+        else:
+            await asyncio.to_thread(
+                self._run_container,
+                container_name,
+                session_api_key,
+                workspace_dir,
+            )
         if self.settings.sandbox_use_internal_network:
             sandbox_url = f'http://{container_name}:{self.settings.sandbox_internal_port}'
         else:
@@ -67,10 +104,24 @@ class DockerSandboxBackend:
         return workspace_dir.resolve()
 
     def _run_container(
-        self, container_name: str, session_api_key: str, workspace_dir: Path
+        self,
+        container_name: str,
+        session_api_key: str,
+        workspace_dir: Path,
+        *args,
+        sandbox_image: str | None = None,
+        sandbox_memory_limit: str | None = None,
+        sandbox_cpus: str | None = None,
+        sandbox_pids_limit: int | None = None,
+        **kwargs,
     ) -> None:
         self._docker(['rm', '-f', container_name], check=False)
-        args = [
+        sandbox_image = sandbox_image or self.settings.sandbox_image
+        sandbox_memory_limit = sandbox_memory_limit or self.settings.sandbox_memory_limit
+        sandbox_cpus = sandbox_cpus or self.settings.sandbox_cpus
+        sandbox_pids_limit = sandbox_pids_limit if sandbox_pids_limit is not None else self.settings.sandbox_pids_limit
+
+        container_args = [
             'run',
             '-d',
             '--name',
@@ -82,20 +133,20 @@ class DockerSandboxBackend:
             '-v',
             f'{workspace_dir}:{self.settings.sandbox_workspace_mount_path}',
             '--memory',
-            self.settings.sandbox_memory_limit,
+            sandbox_memory_limit,
             '--cpus',
-            self.settings.sandbox_cpus,
+            sandbox_cpus,
             '--pids-limit',
-            str(self.settings.sandbox_pids_limit),
+            str(sandbox_pids_limit),
             '--security-opt',
             'no-new-privileges',
         ]
         if self.settings.sandbox_network:
-            args.extend(['--network', self.settings.sandbox_network])
-        args.append(self.settings.sandbox_image)
+            container_args.extend(['--network', self.settings.sandbox_network])
+        container_args.append(sandbox_image)
         if self.settings.sandbox_command:
-            args.extend(self.settings.sandbox_command.split())
-        self._docker(args)
+            container_args.extend(self.settings.sandbox_command.split())
+        self._docker(container_args)
 
     def _published_port(self, container_name: str) -> int:
         result = self._docker(

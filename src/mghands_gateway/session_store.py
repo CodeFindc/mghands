@@ -13,6 +13,7 @@ from mghands_gateway.models import (
     SessionStatus,
     UserRecord,
     utc_now,
+    LLMModelRecord,
 )
 
 
@@ -86,6 +87,29 @@ class SessionStore:
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     data TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS llm_models (
+                    model_id TEXT PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    base_url TEXT,
+                    api_key TEXT,
+                    is_default INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -454,3 +478,128 @@ class SessionStore:
             installed_at=row['installed_at'],
             updated_at=row['updated_at'],
         )
+
+    def _model_from_row(self, row: sqlite3.Row) -> LLMModelRecord:
+        return LLMModelRecord(
+            model_id=row['model_id'],
+            name=row['name'],
+            provider=row['provider'],
+            model=row['model'],
+            base_url=row['base_url'],
+            api_key=row['api_key'],
+            is_default=bool(row['is_default']),
+            created_at=row['created_at'],
+            updated_at=row['updated_at'],
+        )
+
+    async def get_setting(self, key: str, default: str | None = None) -> str | None:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone, 'SELECT value FROM system_settings WHERE key = ?', (key,)
+        )
+        return row['value'] if row else default
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self.init()
+        await asyncio.to_thread(self._set_setting_sync, key, value)
+
+    def _set_setting_sync(self, key: str, value: str) -> None:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            db.execute(
+                'INSERT INTO system_settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+                (key, value),
+            )
+            db.commit()
+
+    async def get_all_settings(self) -> dict[str, str]:
+        await self.init()
+        rows = await asyncio.to_thread(
+            self._fetchall, 'SELECT key, value FROM system_settings', ()
+        )
+        return {row['key']: row['value'] for row in rows}
+
+    async def list_models(self) -> list[LLMModelRecord]:
+        await self.init()
+        rows = await asyncio.to_thread(
+            self._fetchall, 'SELECT * FROM llm_models ORDER BY created_at', ()
+        )
+        return [self._model_from_row(row) for row in rows]
+
+    async def create_model(self, record: LLMModelRecord) -> LLMModelRecord:
+        await self.init()
+        await asyncio.to_thread(self._create_model_sync, record)
+        return record
+
+    def _create_model_sync(self, record: LLMModelRecord) -> None:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            if record.is_default:
+                db.execute('UPDATE llm_models SET is_default = 0')
+            db.execute(
+                """
+                INSERT INTO llm_models(model_id, name, provider, model, base_url, api_key, is_default, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.model_id,
+                    record.name,
+                    record.provider,
+                    record.model,
+                    record.base_url,
+                    record.api_key,
+                    int(record.is_default),
+                    record.created_at.isoformat(),
+                    record.updated_at.isoformat(),
+                ),
+            )
+            db.commit()
+
+    async def get_model(self, model_id: str) -> LLMModelRecord | None:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone, 'SELECT * FROM llm_models WHERE model_id = ?', (model_id,)
+        )
+        return self._model_from_row(row) if row else None
+
+    async def update_model(self, record: LLMModelRecord) -> LLMModelRecord:
+        await self.init()
+        record.updated_at = utc_now()
+        await asyncio.to_thread(self._update_model_sync, record)
+        return record
+
+    def _update_model_sync(self, record: LLMModelRecord) -> None:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            if record.is_default:
+                db.execute('UPDATE llm_models SET is_default = 0 WHERE model_id != ?', (record.model_id,))
+            db.execute(
+                """
+                UPDATE llm_models SET name = ?, provider = ?, model = ?, base_url = ?, api_key = ?, is_default = ?, updated_at = ?
+                WHERE model_id = ?
+                """,
+                (
+                    record.name,
+                    record.provider,
+                    record.model,
+                    record.base_url,
+                    record.api_key,
+                    int(record.is_default),
+                    record.updated_at.isoformat(),
+                    record.model_id,
+                ),
+            )
+            db.commit()
+
+    async def delete_model(self, model_id: str) -> None:
+        await self.init()
+        await asyncio.to_thread(self._delete_model_sync, model_id)
+
+    def _delete_model_sync(self, model_id: str) -> None:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            db.execute('DELETE FROM llm_models WHERE model_id = ?', (model_id,))
+            db.commit()
+
+    async def get_default_model(self) -> LLMModelRecord | None:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone, 'SELECT * FROM llm_models WHERE is_default = 1 LIMIT 1', ()
+        )
+        return self._model_from_row(row) if row else None

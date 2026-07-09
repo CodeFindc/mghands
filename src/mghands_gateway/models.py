@@ -373,3 +373,53 @@ class InstallProjectSkillRequest(BaseModel):
     @classmethod
     def validate_skill_name(cls, value: str) -> str:
         return validate_safe_name(value, 'skill name')
+
+
+class LLMModelRecord(BaseModel):
+    model_id: str = Field(default_factory=lambda: new_id('mdl'))
+    name: str
+    provider: str
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    is_default: bool = False
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class LLMModelResponse(BaseModel):
+    model_id: str
+    name: str
+    provider: str
+    model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    is_default: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_record(cls, record: LLMModelRecord, expose_secrets: bool = False) -> 'LLMModelResponse':
+        dump = record.model_dump()
+        if not expose_secrets and dump['api_key']:
+            dump['api_key'] = '**********'
+        return cls(**dump)
+
+
+class CreateLLMModelRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    base_url: str | None = None
+    api_key: str | None = None
+    is_default: bool = False
+
+
+class UpdateLLMModelRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    provider: str | None = Field(default=None, min_length=1, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    base_url: str | None = None
+    api_key: str | None = None
+    is_default: bool | None = None
+

@@ -122,6 +122,53 @@ class SkillManager:
             metadata=self._metadata(target, source_type='uploaded', source_name=filename),
         )
 
+    def upload_shared_zip(
+        self,
+        skill_name: str,
+        content: bytes,
+    ) -> None:
+        if len(content) > MAX_ZIP_UPLOAD_BYTES:
+            raise ValueError('zip upload is too large')
+        if not zipfile.is_zipfile(BytesIO(content)):
+            raise ValueError('uploaded file is not a valid zip archive')
+
+        target = self._safe_source_dir(skill_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staging = target.with_name(f'.{target.name}.uploading')
+        replacement = target.with_name(f'.{target.name}.tmp')
+        backup = target.with_name(f'.{target.name}.previous')
+        for path in (staging, replacement, backup):
+            if path.exists():
+                shutil.rmtree(path)
+        try:
+            staging.mkdir(parents=True)
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                self._extract_zip(archive, staging)
+            root = self._normalized_skill_root(staging)
+            self._validate_skill_dir(root)
+            shutil.copytree(root, replacement, symlinks=False)
+            if target.exists():
+                target.replace(backup)
+            try:
+                replacement.replace(target)
+            except Exception:
+                if backup.exists() and not target.exists():
+                    backup.replace(target)
+                raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+            if replacement.exists():
+                shutil.rmtree(replacement)
+            if backup.exists():
+                shutil.rmtree(backup)
+
+    def delete_shared(self, skill_name: str) -> None:
+        target = self._safe_source_dir(skill_name)
+        if not target.exists():
+            raise FileNotFoundError('skill not found')
+        shutil.rmtree(target)
+
     def build_skill_specs(self, workspace_dir: Path, records: list[ProjectSkillRecord]) -> list[SkillSpec]:
         specs: list[SkillSpec] = []
         for record in records:

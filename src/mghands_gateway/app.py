@@ -51,6 +51,10 @@ from mghands_gateway.models import (
     new_id,
     utc_now,
     validate_session_id,
+    LLMModelRecord,
+    LLMModelResponse,
+    CreateLLMModelRequest,
+    UpdateLLMModelRequest,
 )
 from mghands_gateway.sandbox_backend import DockerSandboxBackend
 from mghands_gateway.session_store import SessionStore
@@ -242,6 +246,136 @@ async def reset_password(
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'user not found')
     user.password_hash = hash_password(request.password)
     return UserResponse.from_record(await store.update_user(user))
+
+
+@app.get('/api/v1/admin/settings', response_model=dict[str, str])
+async def get_admin_settings(
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> dict[str, str]:
+    return await store.get_all_settings()
+
+
+@app.post('/api/v1/admin/settings', response_model=dict[str, str])
+async def update_admin_settings(
+    request: dict[str, str],
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> dict[str, str]:
+    for key, value in request.items():
+        await store.set_setting(key, value)
+    return await store.get_all_settings()
+
+
+@app.get('/api/v1/admin/models', response_model=list[LLMModelResponse])
+async def list_admin_models(
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> list[LLMModelResponse]:
+    records = await store.list_models()
+    return [LLMModelResponse.from_record(r) for r in records]
+
+
+@app.post('/api/v1/admin/models', response_model=LLMModelResponse, status_code=201)
+async def create_admin_model(
+    request: CreateLLMModelRequest,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> LLMModelResponse:
+    record = LLMModelRecord(
+        name=request.name,
+        provider=request.provider,
+        model=request.model,
+        base_url=request.base_url,
+        api_key=request.api_key,
+        is_default=request.is_default,
+    )
+    for m in await store.list_models():
+        if m.name == request.name:
+            raise HTTPException(status.HTTP_409_CONFLICT, 'Model name already exists')
+    created = await store.create_model(record)
+    return LLMModelResponse.from_record(created)
+
+
+@app.patch('/api/v1/admin/models/{model_id}', response_model=LLMModelResponse)
+async def update_admin_model(
+    model_id: str,
+    request: UpdateLLMModelRequest,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> LLMModelResponse:
+    record = await store.get_model(model_id)
+    if not record:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Model not found')
+    if request.name is not None:
+        for m in await store.list_models():
+            if m.name == request.name and m.model_id != model_id:
+                raise HTTPException(status.HTTP_409_CONFLICT, 'Model name already exists')
+        record.name = request.name
+    if request.provider is not None:
+        record.provider = request.provider
+    if request.model is not None:
+        record.model = request.model
+    if request.base_url is not None:
+        record.base_url = request.base_url
+    if request.api_key is not None:
+        record.api_key = request.api_key
+    if request.is_default is not None:
+        record.is_default = request.is_default
+
+    updated = await store.update_model(record)
+    return LLMModelResponse.from_record(updated)
+
+
+@app.delete('/api/v1/admin/models/{model_id}')
+async def delete_admin_model(
+    model_id: str,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> dict[str, str]:
+    record = await store.get_model(model_id)
+    if not record:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Model not found')
+    await store.delete_model(model_id)
+    return {'status': 'ok'}
+
+
+@app.get('/api/v1/admin/skills', response_model=list[dict[str, Any]])
+async def list_admin_skills(
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> list[dict[str, Any]]:
+    return [item.model_dump(mode='json') for item in manager.catalog()]
+
+
+@app.post('/api/v1/admin/skills/upload', status_code=201)
+async def upload_admin_skill(
+    skill_name: Annotated[str, Form(min_length=1, max_length=100)],
+    file: UploadFile,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> dict[str, str]:
+    content = await file.read()
+    try:
+        manager.upload_shared_zip(skill_name, content)
+        return {'status': 'ok'}
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+
+@app.delete('/api/v1/admin/skills/{skill_name}')
+async def delete_admin_skill(
+    skill_name: str,
+    _admin: Annotated[UserRecord, Depends(_require_admin)],
+    manager: Annotated[SkillManager, Depends(get_skill_manager)],
+) -> dict[str, str]:
+    try:
+        manager.delete_shared(skill_name)
+        return {'status': 'ok'}
+    except FileNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
 @app.get('/api/v1/skills/catalog')
@@ -460,11 +594,23 @@ async def execute(
                 project_skills = await store.list_project_skills(project.project_id)
                 skills = manager.build_skill_specs(Path(project.workspace_dir), project_skills) + skills
         if record.conversation_id is None:
+            llm = request.llm
+            if llm is None:
+                default_model = await store.get_default_model()
+                if default_model:
+                    from mghands_gateway.models import LLMOverride
+                    from pydantic import SecretStr
+                    llm = LLMOverride(
+                        provider=default_model.provider,
+                        model=default_model.model,
+                        base_url=default_model.base_url,
+                        api_key=SecretStr(default_model.api_key) if default_model.api_key else None,
+                    )
             info = await agent_client.start_conversation(
                 _require_sandbox_url(record),
                 _session_api_key_value(record),
                 request.task,
-                request.llm,
+                llm,
                 skills,
                 request.mcp_config,
             )
@@ -742,7 +888,12 @@ async def _create_session_for_project(
             },
         )
     try:
-        sandbox = await sandbox_backend.create(request, Path(project.workspace_dir))
+        import inspect
+        sig = inspect.signature(sandbox_backend.create)
+        if 'store' in sig.parameters:
+            sandbox = await sandbox_backend.create(request, Path(project.workspace_dir), store=store)
+        else:
+            sandbox = await sandbox_backend.create(request, Path(project.workspace_dir))
         record = SessionRecord(
             session_id=request.session_id,
             project_id=project.project_id,

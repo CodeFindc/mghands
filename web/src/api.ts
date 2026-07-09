@@ -1,4 +1,4 @@
-import type { Project, Session, SkillCatalog, TimelineEvent, User } from './types';
+import type { Project, Session, SkillCatalog, TimelineEvent, User, LLMModel, SystemSettings, SkillCatalogItem } from './types';
 
 const API_ROOT = '/api/v1';
 
@@ -15,7 +15,7 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, token: string | null, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (!headers.has('Content-Type') && init.body) {
+  if (!headers.has('Content-Type') && init.body && !(init.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
   if (token) {
@@ -129,6 +129,74 @@ export const api = {
         }
       }
     }
+  },
+
+  adminListUsers(token: string) {
+    return request<User[]>('/admin/users', token);
+  },
+  adminCreateUser(token: string, body: any) {
+    return request<User>('/admin/users', token, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+  adminUpdateUser(token: string, userId: string, body: any) {
+    return request<User>(`/admin/users/${userId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+  adminResetPassword(token: string, userId: string, password: string) {
+    return request<User>(`/admin/users/${userId}/password`, token, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    });
+  },
+  adminGetSettings(token: string) {
+    return request<SystemSettings>('/admin/settings', token);
+  },
+  adminSaveSettings(token: string, settings: SystemSettings) {
+    return request<SystemSettings>('/admin/settings', token, {
+      method: 'POST',
+      body: JSON.stringify(settings),
+    });
+  },
+  adminListSkills(token: string) {
+    return request<SkillCatalogItem[]>('/admin/skills', token);
+  },
+  adminUploadSkill(token: string, skillName: string, file: File) {
+    const formData = new FormData();
+    formData.append('skill_name', skillName);
+    formData.append('file', file);
+    return request<{ status: string }>('/admin/skills/upload', token, {
+      method: 'POST',
+      body: formData,
+    });
+  },
+  adminDeleteSkill(token: string, skillName: string) {
+    return request<{ status: string }>(`/admin/skills/${skillName}`, token, {
+      method: 'DELETE',
+    });
+  },
+  adminListModels(token: string) {
+    return request<LLMModel[]>('/admin/models', token);
+  },
+  adminCreateModel(token: string, body: any) {
+    return request<LLMModel>('/admin/models', token, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  },
+  adminUpdateModel(token: string, modelId: string, body: any) {
+    return request<LLMModel>(`/admin/models/${modelId}`, token, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+  adminDeleteModel(token: string, modelId: string) {
+    return request<{ status: string }>(`/admin/models/${modelId}`, token, {
+      method: 'DELETE',
+    });
   },
 };
 

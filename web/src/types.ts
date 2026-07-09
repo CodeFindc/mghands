@@ -51,3 +51,18 @@ export type TimelineEvent = {
   data?: Record<string, unknown>;
   [key: string]: unknown;
 };
+
+export type SystemSettings = Record<string, string>;
+
+export type LLMModel = {
+  model_id: string;
+  name: string;
+  provider: string;
+  model: string;
+  base_url: string | null;
+  api_key: string | null;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
