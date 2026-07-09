@@ -76,14 +76,14 @@ function eventPreview(event: TimelineEvent): string {
   if (raw && typeof raw === 'object') {
     if (raw.thought || raw.command || raw.code || raw.path) {
       const parts: string[] = [];
-      if (raw.thought) parts.push(raw.thought);
-      if (raw.command) parts.push(`$ ${raw.command}`);
-      if (raw.code) parts.push(raw.code);
-      if (raw.path) parts.push(`File: ${raw.path}`);
+      if (raw.thought) parts.push(typeof raw.thought === 'string' ? raw.thought : JSON.stringify(raw.thought));
+      if (raw.command) parts.push(`$ ${typeof raw.command === 'string' ? raw.command : JSON.stringify(raw.command)}`);
+      if (raw.code) parts.push(typeof raw.code === 'string' ? raw.code : JSON.stringify(raw.code));
+      if (raw.path) parts.push(`File: ${typeof raw.path === 'string' ? raw.path : JSON.stringify(raw.path)}`);
       if (parts.length > 0) return parts.join('\n');
     }
     if (raw.content) {
-      let res = raw.content;
+      let res = typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content, null, 2);
       if (raw.exit_code !== undefined && raw.exit_code !== 0) {
         res += `\n[Exit Code: ${raw.exit_code}]`;
       }
@@ -91,12 +91,14 @@ function eventPreview(event: TimelineEvent): string {
     }
     if (raw.action && typeof raw.action === 'object') {
       const parts: string[] = [];
-      if (raw.action.thought) parts.push(raw.action.thought);
-      if (raw.action.command) parts.push(`$ ${raw.action.command}`);
+      if (raw.action.thought) parts.push(typeof raw.action.thought === 'string' ? raw.action.thought : JSON.stringify(raw.action.thought));
+      if (raw.action.command) parts.push(`$ ${typeof raw.action.command === 'string' ? raw.action.command : JSON.stringify(raw.action.command)}`);
       if (parts.length > 0) return parts.join('\n');
     }
     if (raw.observation && typeof raw.observation === 'object') {
-      if (raw.observation.content) return raw.observation.content;
+      if (raw.observation.content) {
+        return typeof raw.observation.content === 'string' ? raw.observation.content : JSON.stringify(raw.observation.content, null, 2);
+      }
     }
   }
 
@@ -107,22 +109,22 @@ function toolNameMeta(event: TimelineEvent): string {
   const raw = event.data?.raw as any;
   if (!raw) return '';
 
-  if (String(event.kind).includes('SystemPromptEvent')) return 'system prompt';
-  if (raw.command) return `command: ${raw.command}`;
-  if (raw.path) return `path: ${raw.path}`;
-  if (raw.code) return `code: ${raw.code.substring(0, 60)}`;
-  if (raw.content && String(event.kind).includes('Observation')) {
-    return `result: ${raw.content.substring(0, 60)}`;
+  if (String(event.kind || '').includes('SystemPromptEvent')) return 'system prompt';
+  if (raw.command) return `command: ${typeof raw.command === 'string' ? raw.command : JSON.stringify(raw.command)}`;
+  if (raw.path) return `path: ${typeof raw.path === 'string' ? raw.path : JSON.stringify(raw.path)}`;
+  if (raw.code) return `code: ${String(raw.code).substring(0, 60)}`;
+  if (raw.content && String(event.kind || '').includes('Observation')) {
+    return `result: ${String(raw.content).substring(0, 60)}`;
   }
-  if (raw.kind) return raw.kind;
+  if (raw.kind) return String(raw.kind);
 
   const action = raw.action;
   if (action) {
     if (typeof action === 'string') return action;
     if (typeof action === 'object') {
-      if (action.command) return `command: ${action.command}`;
-      if (action.path) return `path: ${action.path}`;
-      if (action.kind) return action.kind;
+      if (action.command) return `command: ${typeof action.command === 'string' ? action.command : JSON.stringify(action.command)}`;
+      if (action.path) return `path: ${typeof action.path === 'string' ? action.path : JSON.stringify(action.path)}`;
+      if (action.kind) return String(action.kind);
       return JSON.stringify(action);
     }
   }
@@ -131,12 +133,13 @@ function toolNameMeta(event: TimelineEvent): string {
   if (observation) {
     if (typeof observation === 'string') return observation;
     if (typeof observation === 'object') {
-      if (observation.kind) return observation.kind;
+      if (observation.kind) return String(observation.kind);
+      if (observation.content) return String(observation.content).substring(0, 60);
       return JSON.stringify(observation);
     }
   }
 
-  return raw.event_type || event.kind || '';
+  return String(raw.event_type || event.kind || '');
 }
 
 
