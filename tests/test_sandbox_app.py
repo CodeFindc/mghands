@@ -351,3 +351,27 @@ def test_sdk_adapter_falls_back_to_prompt_run_without_send_message() -> None:
 
     assert result == 'done'
     assert calls == [('run', 'create hello.txt')]
+
+
+def test_sdk_adapter_resets_conversation_terminal_status() -> None:
+    class FakeState:
+        def __init__(self, status):
+            self.status = status
+
+    class FakeConversation:
+        def __init__(self, status):
+            self.state = FakeState(status)
+
+        def run(self):
+            return 'done'
+
+    runtime = RuntimeConversation(info=ConversationInfo(), sdk_conversation=FakeConversation('completed'))
+    message = MessageRequest(
+        content=[{'type': 'text', 'text': 'next task'}],
+        run=True,
+    )
+
+    result = _OfficialSDKAdapter().run(runtime, message)
+
+    assert result == 'done'
+    assert runtime.sdk_conversation.state.status == 'idle'

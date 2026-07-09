@@ -492,6 +492,18 @@ class _OfficialSDKAdapter:
         conversation = runtime.sdk_conversation
         if conversation is None:
             raise RuntimeError('SDK conversation is not initialized')
+        
+        # Reset terminal status in OpenHands SDK state if present to allow reuse
+        state = getattr(conversation, 'state', None)
+        if state is not None and hasattr(state, 'status'):
+            status_attr = getattr(state, 'status')
+            status_class = status_attr.__class__
+            idle_val = getattr(status_class, 'IDLE', None) or getattr(status_class, 'idle', None) or getattr(status_class, 'RUNNING', None) or 'idle'
+            try:
+                state.status = idle_val
+            except Exception as exc:
+                print(f"WARNING: failed to reset OpenHands conversation status: {exc}", flush=True)
+
         run = getattr(conversation, 'run', None)
         if run is None:
             raise RuntimeError('SDK conversation does not expose run()')
