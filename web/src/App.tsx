@@ -171,6 +171,8 @@ function MainApp() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sessionMap, setSessionMap] = useState<SessionMap>(() => loadSessionMap());
   const abortRef = useRef<AbortController | null>(null);
+  const timelineEndRef = useRef<HTMLDivElement | null>(null);
+  const terminalEndRef = useRef<HTMLDivElement | null>(null);
 
   // New Redesign UI Tab States
   const [activeTab, setActiveTab] = useState<'chat' | 'shell' | 'files'>('chat');
@@ -708,6 +710,20 @@ function MainApp() {
       return kind.includes('ActionEvent') || kind.includes('ObservationEvent') || kind === 'agent.result' || kind === 'agent.error';
     });
   }, [events]);
+
+  // Auto-scroll chat timeline to bottom
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      timelineEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [events, activeTab]);
+
+  // Auto-scroll terminal logs to bottom
+  useEffect(() => {
+    if (activeTab === 'shell') {
+      terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [terminalLogs, activeTab]);
 
   // File tree builder
   const fileTreeRoot = useMemo(() => {
@@ -1360,6 +1376,7 @@ function MainApp() {
                       <p>输入一个任务，Mghands 会创建沙箱会话并把 OpenHands 事件映射到这里。</p>
                     </div>
                   )}
+                  <div ref={timelineEndRef} />
                 </div>
                 <form className="composer" onSubmit={runPrompt}>
                   <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如: 检查当前工作区结构并运行测试" />
@@ -1409,6 +1426,7 @@ function MainApp() {
                 {!terminalLogs.length && (
                   <div className="terminal-empty">暂无终端命令行交互日志，请在“对话”中发布包含指令的任务</div>
                 )}
+                <div ref={terminalEndRef} />
               </div>
             </div>
           )}

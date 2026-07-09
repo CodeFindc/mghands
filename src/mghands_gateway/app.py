@@ -794,7 +794,12 @@ async def stream(
             raise HTTPException(status.HTTP_409_CONFLICT, 'session has no conversation yet')
     event_id = after or request.headers.get('last-event-id')
     generator = _event_stream(session_id, event_id, store, agent_client, settings, request)
-    return StreamingResponse(generator, media_type='text/event-stream')
+    headers = {
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    }
+    return StreamingResponse(generator, media_type='text/event-stream', headers=headers)
 
 
 @app.post('/api/v1/sessions/{session_id}/skills/reload')
@@ -830,7 +835,7 @@ async def _event_stream(
     agent_client: AgentServerClient,
     settings: Settings,
     request: Request,
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[bytes, None]:
     seen: set[str] = set()
     after_seen = after is None
     idle_for = 0.0
@@ -861,7 +866,7 @@ async def _event_stream(
                 record.last_event_id = event_id
                 await store.save(record)
                 emitted = True
-                yield _sse(event='message', data=event, event_id=event_id)
+                yield _sse(event='message', data=event, event_id=event_id).encode('utf-8')
         if record.status in {SessionStatus.ERROR, SessionStatus.DELETED}:
             terminal_type = 'error' if record.status == SessionStatus.ERROR else 'cancelled'
             terminal = TerminalEvent(
@@ -870,7 +875,7 @@ async def _event_stream(
                 conversation_id=record.conversation_id,
                 detail=record.error,
             )
-            yield _sse(event=terminal_type, data=terminal.model_dump())
+            yield _sse(event=terminal_type, data=terminal.model_dump()).encode('utf-8')
             return
         await asyncio.sleep(settings.sse_poll_seconds)
         if emitted:
@@ -881,7 +886,7 @@ async def _event_stream(
             heartbeat_for += settings.sse_poll_seconds
             if heartbeat_for >= settings.sse_heartbeat_seconds:
                 heartbeat_for = 0.0
-                yield ': heartbeat\n\n'
+                yield ': heartbeat\n\n'.encode('utf-8')
 
 
 def _sse(event: str, data: object, event_id: str | None = None) -> str:
