@@ -1,4 +1,4 @@
-import type { Project, Session, SkillCatalog, TimelineEvent, User, LLMModel, SystemSettings, SkillCatalogItem } from './types';
+import type { Project, Session, SkillCatalog, TimelineEvent, User, LLMModel, SystemSettings, SkillCatalogItem, WorkspaceFile } from './types';
 
 const API_ROOT = '/api/v1';
 
@@ -197,6 +197,18 @@ export const api = {
     return request<{ status: string }>(`/admin/models/${modelId}`, token, {
       method: 'DELETE',
     });
+  },
+  listProjectFiles(token: string, projectId: string) {
+    return request<WorkspaceFile[]>(`/projects/${projectId}/files`, token);
+  },
+  readProjectFile(token: string, projectId: string, path: string) {
+    return request<{ path: string; content: string }>(
+      `/projects/${projectId}/files/read?path=${encodeURIComponent(path)}`,
+      token,
+    );
+  },
+  listProjectSessions(token: string, projectId: string) {
+    return request<Session[]>(`/projects/${projectId}/sessions`, token);
   },
 };
 

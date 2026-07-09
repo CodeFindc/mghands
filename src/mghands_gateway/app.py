@@ -434,6 +434,81 @@ async def delete_project(
     return ProjectResponse.from_record(await store.save_project(project))
 
 
+@app.get('/api/v1/projects/{project_id}/files')
+async def list_project_files(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> list[dict[str, Any]]:
+    project = await store.get_project(project_id)
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'project not found')
+    if project.user_id != current_user.user_id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'forbidden')
+
+    workspace_dir = _project_workspace(settings, project.user_id, project_id)
+    if not workspace_dir.exists():
+        return []
+
+    from datetime import datetime, timezone
+    files = []
+    ignored_dirs = {'.git', 'node_modules', '.mghands', '__pycache__', '.pytest_cache'}
+    for p in workspace_dir.rglob('*'):
+        rel_parts = p.relative_to(workspace_dir).parts
+        if any(part in ignored_dirs for part in rel_parts):
+            continue
+        try:
+            stat = p.stat()
+            is_dir = p.is_dir()
+            files.append({
+                'path': '/'.join(rel_parts),
+                'is_dir': is_dir,
+                'size': stat.st_size if not is_dir else 0,
+                'updated_at': datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+            })
+        except Exception:
+            pass
+    files.sort(key=lambda x: x['path'])
+    return files
+
+
+@app.get('/api/v1/projects/{project_id}/files/read')
+async def read_project_file(
+    project_id: str,
+    path: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> dict[str, Any]:
+    project = await store.get_project(project_id)
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'project not found')
+    if project.user_id != current_user.user_id and current_user.role != UserRole.ADMIN:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'forbidden')
+
+    workspace_dir = _project_workspace(settings, project.user_id, project_id)
+    safe_path = (workspace_dir / path).resolve()
+    if workspace_dir != safe_path and workspace_dir not in safe_path.parents:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, 'access denied')
+
+    if not safe_path.exists() or safe_path.is_dir():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'file not found')
+
+    if safe_path.stat().st_size > 5 * 1024 * 1024:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, 'file is too large to read (max 5MB)')
+
+    try:
+        content = safe_path.read_text(encoding='utf-8', errors='replace')
+        return {
+            'path': path,
+            'content': content,
+        }
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f'could not read file: {exc}') from exc
+
+
+
 @app.post('/api/v1/projects/{project_id}/sessions', response_model=SessionResponse, status_code=201)
 async def create_project_session(
     project_id: str,
@@ -451,6 +526,24 @@ async def create_project_session(
         workspace_policy=request.workspace_policy,
     )
     return await _create_session_for_project(session_request, project, current_user, settings, store, sandbox_backend)
+
+
+@app.get('/api/v1/projects/{project_id}/sessions', response_model=list[SessionResponse])
+async def list_project_sessions(
+    project_id: str,
+    current_user: Annotated[UserRecord, Depends(_require_auth)],
+    store: Annotated[SessionStore, Depends(get_store)],
+) -> list[SessionResponse]:
+    project = await _get_project_or_404(store, project_id, current_user)
+    records = await store.list_sessions_for_project(project.project_id)
+    active = await store.get_active_session_for_project(project.project_id)
+    active_id = active.session_id if active else None
+
+    filtered = []
+    for r in records:
+        if r.status != SessionStatus.DELETED or r.session_id == active_id:
+            filtered.append(SessionResponse.from_record(r))
+    return filtered
 
 
 @app.get('/api/v1/projects/{project_id}/skills', response_model=list[ProjectSkillResponse])

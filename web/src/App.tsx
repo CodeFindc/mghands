@@ -20,10 +20,15 @@ import {
   ArrowLeft,
   Settings,
   PlusCircle,
-  RefreshCw,
+  Folder,
+  FolderOpen,
+  FileCode,
+  ChevronRight,
+  ChevronDown,
+  FileText,
 } from 'lucide-react';
 import { ApiError, api, errorMessage } from './api';
-import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings } from './types';
+import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings, WorkspaceFile } from './types';
 
 const TOKEN_KEY = 'mghands.access_token';
 const SESSION_MAP_KEY = 'mghands.project_sessions';
@@ -71,6 +76,13 @@ function statusLabel(status?: string | null): string {
   return '未连接';
 }
 
+interface TreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children: Record<string, TreeNode>;
+}
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [user, setUser] = useState<User | null>(null);
@@ -90,6 +102,15 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [sessionMap, setSessionMap] = useState<SessionMap>(() => loadSessionMap());
   const abortRef = useRef<AbortController | null>(null);
+
+  // New Redesign UI Tab States
+  const [activeTab, setActiveTab] = useState<'chat' | 'shell' | 'files'>('chat');
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [projectFiles, setProjectFiles] = useState<WorkspaceFile[]>([]);
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+  const [selectedFileContent, setSelectedFileContent] = useState<string | null>(null);
+  const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
+  const [collapsedTools, setCollapsedTools] = useState<Record<string, boolean>>({});
 
   // Admin View States
   const [isAdminView, setIsAdminView] = useState(false);
@@ -137,25 +158,69 @@ export default function App() {
     void bootstrap(token);
   }, [token]);
 
+  // Load project sessions when selecting project
   useEffect(() => {
     if (!token || !selectedProjectId || isAdminView) return;
-    const sessionId = sessionMap[selectedProjectId];
-    if (!sessionId) {
-      setSession(null);
-      setEvents([]);
-      return;
+    void loadSessions(selectedProjectId);
+  }, [selectedProjectId, token, isAdminView, sessionMap]);
+
+  // Load project files when on Files tab
+  useEffect(() => {
+    if (activeTab === 'files' && selectedProjectId && token) {
+      void loadProjectFiles();
     }
-    void api
-      .getSession(token, sessionId)
-      .then((next) => {
+  }, [activeTab, selectedProjectId, token]);
+
+  // Load file content when selecting a file path
+  useEffect(() => {
+    if (selectedFilePath && selectedProjectId && token) {
+      void loadFileContent(selectedFilePath);
+    } else {
+      setSelectedFileContent(null);
+    }
+  }, [selectedFilePath, selectedProjectId, token]);
+
+  async function loadSessions(projId: string) {
+    try {
+      const list = await api.listProjectSessions(token, projId);
+      setSessions(list);
+      const mappedId = sessionMap[projId];
+      if (mappedId && list.some(s => s.session_id === mappedId)) {
+        const next = await api.getSession(token, mappedId);
         setSession(next);
         if (next.conversation_id) void refreshHistory(next.session_id);
-      })
-      .catch(() => {
+      } else if (list.length > 0) {
+        const latest = list[0];
+        setSession(latest);
+        if (latest.conversation_id) void refreshHistory(latest.session_id);
+      } else {
         setSession(null);
         setEvents([]);
-      });
-  }, [selectedProjectId, sessionMap, token, isAdminView]);
+      }
+    } catch (e) {
+      console.error('Failed to load project sessions', e);
+    }
+  }
+
+  async function loadProjectFiles() {
+    if (!token || !selectedProjectId) return;
+    try {
+      const list = await api.listProjectFiles(token, selectedProjectId);
+      setProjectFiles(list);
+    } catch (e) {
+      setNotice(errorMessage(e));
+    }
+  }
+
+  async function loadFileContent(filePath: string) {
+    if (!token || !selectedProjectId) return;
+    try {
+      const res = await api.readProjectFile(token, selectedProjectId, filePath);
+      setSelectedFileContent(res.content);
+    } catch (e) {
+      setSelectedFileContent(`Error loading file: ${errorMessage(e)}`);
+    }
+  }
 
   // Load admin tab data dynamically
   async function loadAdminData(tab = adminTab) {
@@ -276,6 +341,7 @@ export default function App() {
       setSessionMap(map);
       setSession(next);
       setNotice('沙箱会话已创建');
+      await loadSessions(selectedProject.project_id);
       return next;
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && typeof error.detail === 'object' && error.detail) {
@@ -286,6 +352,7 @@ export default function App() {
           saveSessionMap(map);
           setSessionMap(map);
           setSession(next);
+          await loadSessions(selectedProject.project_id);
           return next;
         }
       }
@@ -308,6 +375,7 @@ export default function App() {
       setSession(null);
       setEvents([]);
       setNotice('会话已停止');
+      await loadSessions(selectedProject.project_id);
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
@@ -551,6 +619,94 @@ export default function App() {
     setModelIsDefault(model.is_default);
   }
 
+  // Shell Terminal logs extractor
+  const terminalLogs = useMemo(() => {
+    return events.filter(e => {
+      const kind = e.kind || '';
+      return kind.includes('ActionEvent') || kind.includes('ObservationEvent') || kind === 'agent.result' || kind === 'agent.error';
+    });
+  }, [events]);
+
+  // File tree builder
+  const fileTreeRoot = useMemo(() => {
+    const root: TreeNode = { name: '', path: '', isDir: true, children: {} };
+    for (const f of projectFiles) {
+      const parts = f.path.split('/');
+      let current = root;
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i];
+        const isLast = i === parts.length - 1;
+        const isDir = !isLast ? true : f.is_dir;
+        const currentPath = parts.slice(0, i + 1).join('/');
+        if (!current.children[part]) {
+          current.children[part] = {
+            name: part,
+            path: currentPath,
+            isDir: isDir,
+            children: {},
+          };
+        }
+        current = current.children[part];
+      }
+    }
+    return root;
+  }, [projectFiles]);
+
+  function renderFileTreeNode(node: TreeNode, depth = 0) {
+    const isExpanded = expandedDirs[node.path] ?? false;
+    const hasChildren = Object.keys(node.children).length > 0;
+    const isSelected = selectedFilePath === node.path;
+
+    function toggleExpand() {
+      if (node.isDir) {
+        setExpandedDirs(prev => ({ ...prev, [node.path]: !isExpanded }));
+      } else {
+        setSelectedFilePath(node.path);
+      }
+    }
+
+    return (
+      <div key={node.path || 'root'} className="tree-node-wrapper">
+        {node.path && (
+          <div
+            className={`tree-node ${isSelected ? 'selected' : ''}`}
+            style={{ paddingLeft: `${depth * 14 + 6}px` }}
+            onClick={toggleExpand}
+          >
+            <span className="tree-arrow">
+              {node.isDir ? (
+                isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />
+              ) : null}
+            </span>
+            <span className="tree-icon">
+              {node.isDir ? (
+                isExpanded ? <FolderOpen size={14} /> : <Folder size={14} />
+              ) : (
+                <FileCode size={14} />
+              )}
+            </span>
+            <span className="tree-name">{node.name}</span>
+          </div>
+        )}
+        {node.isDir && (depth === 0 || isExpanded) && (
+          <div className="tree-children">
+            {Object.values(node.children)
+              .sort((a, b) => {
+                if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+                return a.name.localeCompare(b.name);
+              })
+              .map(child => renderFileTreeNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Toggle Collapse on specific Tool Cards in Chat
+  function toggleToolCollapse(eventId: string) {
+    setCollapsedTools(prev => ({ ...prev, [eventId]: !(prev[eventId] ?? true) }));
+  }
+
   if (!token) {
     return (
       <main className="auth-shell">
@@ -616,13 +772,73 @@ export default function App() {
           </>
         ) : (
           <>
+            <div className="project-select-block">
+              <label className="sidebar-field-label">当前项目</label>
+              <select
+                className="premium-select sidebar-select"
+                value={selectedProjectId || ''}
+                onChange={(e) => {
+                  setSelectedProjectId(e.target.value || null);
+                  setSelectedFilePath(null);
+                }}
+              >
+                {projects.map((proj) => (
+                  <option key={proj.project_id} value={proj.project_id}>{proj.name}</option>
+                ))}
+                {!projects.length && <option value="">无可用项目</option>}
+              </select>
+            </div>
+
+            <div className="sidebar-title-row">
+              <span className="sidebar-title-text">会话历史</span>
+              <button
+                className="new-session-mini-btn"
+                title="新建会话"
+                onClick={() => void ensureSession()}
+                disabled={!selectedProjectId || busy}
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+
+            <nav className="project-list">
+              {sessions.map((s) => {
+                const isSelected = session?.session_id === s.session_id;
+                const formattedTime = new Date(s.updated_at).toLocaleTimeString();
+                return (
+                  <button
+                    key={s.session_id}
+                    className={`project ${isSelected ? 'active' : ''}`}
+                    onClick={() => {
+                      setSession(s);
+                      if (s.conversation_id) {
+                        void refreshHistory(s.session_id);
+                      } else {
+                        setEvents([]);
+                      }
+                    }}
+                  >
+                    <div className="session-item-row">
+                      <span className="session-item-title">{s.session_id.substring(0, 16)}...</span>
+                      <span className={`session-state-dot ${s.status}`}></span>
+                    </div>
+                    <div className="session-item-meta">
+                      <small>{formattedTime}</small>
+                      <span className="session-status-badge">{statusLabel(s.status)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+              {!sessions.length && <div className="empty-mini">该项目下暂无会话，请点击右上角或上方新建</div>}
+            </nav>
+
             <form className="project-form" onSubmit={createProject}>
-              <input placeholder="新项目名称" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+              <input placeholder="创建新项目" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
               <button disabled={busy || !projectName.trim()}><FolderPlus size={17} /></button>
             </form>
 
             <div className="skill-strip">
-              <span><Sparkles size={15} /> 默认技能</span>
+              <span><Sparkles size={15} /> 默认技能配置</span>
               <div className="skill-list">
                 {skills.length ? skills.map((skill) => (
                   <button
@@ -635,22 +851,7 @@ export default function App() {
                   </button>
                 )) : <span className="muted">未配置共享技能</span>}
               </div>
-              {defaultSkills.length > 0 && <small>系统默认: {defaultSkills.join(', ')}</small>}
             </div>
-
-            <nav className="project-list">
-              {projects.map((project) => (
-                <button
-                  key={project.project_id}
-                  className={project.project_id === selectedProjectId ? 'project active' : 'project'}
-                  onClick={() => setSelectedProjectId(project.project_id)}
-                >
-                  <span>{project.name}</span>
-                  <small>{new Date(project.updated_at).toLocaleString()}</small>
-                </button>
-              ))}
-              {!projects.length && <div className="empty-mini">创建第一个项目开始使用</div>}
-            </nav>
 
             {user?.role === 'admin' && (
               <div className="sidebar-footer" style={{ marginTop: 'auto', width: '100%' }}>
@@ -992,9 +1193,25 @@ export default function App() {
         <section className="workspace">
           <header className="topbar">
             <div>
-              <p className="eyebrow">Project Workspace</p>
-              <h1>{selectedProject?.name || '选择或创建项目'}</h1>
+              <p className="eyebrow">{selectedProject?.name || 'Workspace'}</p>
+              <h1>{session ? `会话: ${session.session_id.substring(0, 12)}...` : '未选择或创建会话'}</h1>
             </div>
+            
+            <div className="viewport-tabs">
+              <button className={`tab-btn ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>
+                对话 (Chat)
+              </button>
+              <button className={`tab-btn ${activeTab === 'shell' ? 'active' : ''}`} onClick={() => setActiveTab('shell')}>
+                终端 (Shell)
+              </button>
+              <button className={`tab-btn ${activeTab === 'files' ? 'active' : ''}`} onClick={() => {
+                setActiveTab('files');
+                void loadProjectFiles();
+              }}>
+                工作区 (Files)
+              </button>
+            </div>
+
             <div className="session-actions">
               <span className={`status ${session?.status || 'idle'}`}><RadioTower size={15} /> {statusLabel(session?.status)}</span>
               <button onClick={() => void ensureSession()} disabled={!selectedProject || busy}><Plus size={17} /> 新建会话</button>
@@ -1005,58 +1222,145 @@ export default function App() {
 
           {notice && <div className="notice">{notice}</div>}
 
-          <div className="content-grid">
-            <section className="chat-panel">
-              <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
-              <div className="timeline">
-                {events.map((event, index) => (
-                  <article className={`event-card ${String(event.kind || '').includes('error') ? 'error' : ''}`} key={`${event.id || 'local'}-${index}`}>
-                    <div className="event-meta">
-                      <strong>{eventTitle(event)}</strong>
-                      <span>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</span>
+          {activeTab === 'chat' && (
+            <div className="content-grid">
+              <section className="chat-panel">
+                <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
+                <div className="timeline">
+                  {events.map((event, index) => {
+                    const isToolCall = String(event.kind || '').includes('ActionEvent') || String(event.kind || '').includes('ObservationEvent');
+                    const eventId = event.id || `local-${index}`;
+                    const isCollapsed = collapsedTools[eventId] ?? true;
+
+                    if (isToolCall) {
+                      return (
+                        <div key={eventId} className="tool-card-collapsible">
+                          <button className="tool-card-header" onClick={() => toggleToolCollapse(eventId)}>
+                            <div className="tool-header-info">
+                              <Wrench size={14} className="tool-icon" />
+                              <strong>{eventTitle(event)}</strong>
+                              <span className="tool-name-meta">{(event.data?.raw as any)?.action || (event.data?.raw as any)?.observation || ''}</span>
+                            </div>
+                            <span className="tool-toggle-icon">
+                              {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+                            </span>
+                          </button>
+                          {!isCollapsed && (
+                            <div className="tool-card-body">
+                              <pre>{eventPreview(event)}</pre>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <article className={`event-card ${String(event.kind || '').includes('error') ? 'error' : ''}`} key={eventId}>
+                        <div className="event-meta">
+                          <strong>{eventTitle(event)}</strong>
+                          <span>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</span>
+                        </div>
+                        <pre>{eventPreview(event)}</pre>
+                      </article>
+                    );
+                  })}
+                  {!events.length && (
+                    <div className="empty-state">
+                      <TerminalSquare size={42} />
+                      <h2>还没有任务事件</h2>
+                      <p>输入一个任务，Mghands 会创建沙箱会话并把 OpenHands 事件映射到这里。</p>
                     </div>
-                    <pre>{eventPreview(event)}</pre>
-                  </article>
-                ))}
-                {!events.length && (
-                  <div className="empty-state">
-                    <TerminalSquare size={42} />
-                    <h2>还没有任务事件</h2>
-                    <p>输入一个任务，Mghands 会创建沙箱会话并把 OpenHands 事件映射到这里。</p>
+                  )}
+                </div>
+                <form className="composer" onSubmit={runPrompt}>
+                  <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如: 检查当前工作区结构并运行测试" />
+                  <button className="primary" disabled={!selectedProject || busy || !prompt.trim()}>
+                    {busy ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}
+                    发送
+                  </button>
+                </form>
+              </section>
+
+              <aside className="inspector">
+                <div className="panel-title"><Wrench size={18} /> 会话详情</div>
+                <dl>
+                  <dt>Session ID</dt>
+                  <dd>{session?.session_id || '未创建'}</dd>
+                  <dt>Conversation</dt>
+                  <dd>{session?.conversation_id || '等待首次执行'}</dd>
+                  <dt>Sandbox</dt>
+                  <dd>{session?.sandbox_id || session?.sandbox_url || '未启动'}</dd>
+                  <dt>Last Event</dt>
+                  <dd>{session?.last_event_id || lastEventId || '无'}</dd>
+                </dl>
+                {session?.error && <div className="notice danger">{session.error}</div>}
+                <div className="capability-card">
+                  <CheckCircle2 size={20} />
+                  <div>
+                    <strong>已适配 API</strong>
+                    <p>登录、项目、技能目录、会话、执行、历史与 SSE 流。</p>
                   </div>
+                </div>
+              </aside>
+            </div>
+          )}
+
+          {activeTab === 'shell' && (
+            <div className="terminal-panel-shell">
+              <div className="terminal-header">
+                <TerminalSquare size={18} /> <span>Interactive Sandbox Terminal Logs</span>
+              </div>
+              <div className="terminal-body">
+                {terminalLogs.map((log, index) => (
+                  <div key={index} className={`terminal-row ${String(log.kind).includes('Observation') ? 'stdout' : 'stdin'}`}>
+                    <span className="terminal-prompt">{String(log.kind).includes('Observation') ? '$' : '>'}</span>
+                    <pre className="terminal-content">{eventPreview(log)}</pre>
+                  </div>
+                ))}
+                {!terminalLogs.length && (
+                  <div className="terminal-empty">暂无终端命令行交互日志，请在“对话”中发布包含指令的任务</div>
                 )}
               </div>
-              <form className="composer" onSubmit={runPrompt}>
-                <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="例如: 检查当前工作区结构并运行测试" />
-                <button className="primary" disabled={!selectedProject || busy || !prompt.trim()}>
-                  {busy ? <Loader2 className="spin" size={18} /> : <SendHorizontal size={18} />}
-                  发送
-                </button>
-              </form>
-            </section>
+            </div>
+          )}
 
-            <aside className="inspector">
-              <div className="panel-title"><Wrench size={18} /> 会话详情</div>
-              <dl>
-                <dt>Session ID</dt>
-                <dd>{session?.session_id || '未创建'}</dd>
-                <dt>Conversation</dt>
-                <dd>{session?.conversation_id || '等待首次执行'}</dd>
-                <dt>Sandbox</dt>
-                <dd>{session?.sandbox_id || session?.sandbox_url || '未启动'}</dd>
-                <dt>Last Event</dt>
-                <dd>{session?.last_event_id || lastEventId || '无'}</dd>
-              </dl>
-              {session?.error && <div className="notice danger">{session.error}</div>}
-              <div className="capability-card">
-                <CheckCircle2 size={20} />
-                <div>
-                  <strong>已适配 API</strong>
-                  <p>登录、项目、技能目录、会话、执行、历史与 SSE 流。</p>
+          {activeTab === 'files' && (
+            <div className="files-panel-shell">
+              <aside className="files-tree-panel">
+                <div className="panel-title"><Folder size={18} /> 工作区文件浏览</div>
+                <div className="files-tree-body">
+                  {projectFiles.length > 0 ? (
+                    renderFileTreeNode(fileTreeRoot)
+                  ) : (
+                    <div className="empty-mini">工作区没有文件或未加载成功</div>
+                  )}
                 </div>
-              </div>
-            </aside>
-          </div>
+              </aside>
+              <section className="files-preview-panel">
+                <div className="panel-title">
+                  <FileText size={18} /> <span>文件预览: {selectedFilePath || '未选择文件'}</span>
+                </div>
+                <div className="files-preview-body">
+                  {selectedFilePath ? (
+                    selectedFileContent !== null ? (
+                      <pre className="code-viewer-pre">
+                        <code>{selectedFileContent}</code>
+                      </pre>
+                    ) : (
+                      <div className="file-loading">
+                        <Loader2 className="spin" size={24} /> 加载文件中...
+                      </div>
+                    )
+                  ) : (
+                    <div className="file-unselected">
+                      <FileCode size={48} className="muted" />
+                      <h3>请在左侧文件树中点击选择文件进行预览</h3>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
         </section>
       )}
     </main>

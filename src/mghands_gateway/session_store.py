@@ -407,6 +407,25 @@ class SessionStore:
             raise KeyError(session_id)
         return record
 
+    async def list_sessions_for_project(self, project_id: str) -> list[SessionRecord]:
+        rows = await asyncio.to_thread(self._list_sessions_for_project_sync, project_id)
+        records = []
+        for r in rows:
+            try:
+                records.append(SessionRecord.model_validate_json(r))
+            except Exception:
+                pass
+        return records
+
+    def _list_sessions_for_project_sync(self, project_id: str) -> list[str]:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            cursor = db.execute(
+                'SELECT data FROM sessions WHERE project_id = ? ORDER BY updated_at DESC',
+                (project_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+
     def _to_row(self, record: SessionRecord) -> tuple[str, str | None, str | None, str, str, str]:
         return (
             record.session_id,

@@ -66,3 +66,9 @@ export type LLMModel = {
   updated_at: string;
 };
 
+export type WorkspaceFile = {
+  path: string;
+  is_dir: boolean;
+  size: number;
+  updated_at: string;
+};
