@@ -38,8 +38,11 @@ class DockerSandboxBackend:
             session_api_key,
             workspace_dir,
         )
-        host_port = await asyncio.to_thread(self._published_port, container_name)
-        sandbox_url = f'http://{self.settings.sandbox_host}:{host_port}'
+        if self.settings.sandbox_use_internal_network:
+            sandbox_url = f'http://{container_name}:{self.settings.sandbox_internal_port}'
+        else:
+            host_port = await asyncio.to_thread(self._published_port, container_name)
+            sandbox_url = f'http://{self.settings.sandbox_host}:{host_port}'
         await self._wait_until_ready(sandbox_url, session_api_key)
         return SandboxHandle(
             sandbox_id=sandbox_id,

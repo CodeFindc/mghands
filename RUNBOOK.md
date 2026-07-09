@@ -103,6 +103,24 @@ cd D:\iso\Mghands
 docker build -f Dockerfile.sandbox -t mghands-sandbox:latest .
 ```
 
+使用 Docker Compose 构建完整 Web/Gateway 与 sandbox 镜像：
+
+```powershell
+cd D:\iso\Mghands
+docker compose build gateway
+docker compose --profile build-only build sandbox-image
+```
+
+启动 Compose 版本：
+
+```powershell
+$env:MGHANDS_BOOTSTRAP_ADMIN_USERNAME="admin"
+$env:MGHANDS_BOOTSTRAP_ADMIN_PASSWORD="change-me-strong-password"
+docker compose up gateway
+```
+
+Compose 默认将 Gateway 暴露到 `http://localhost:8080`，并使用名为 `mghands` 的 Docker 网络让 Gateway 通过 `http://mghands-<session_id>:3000` 访问按需创建的 sandbox 容器。Gateway 状态、项目 workspace 和共享技能目录持久化在 `mghands-data` 命名卷的 `/data/mghands` 下。首次启动后，如果 SQLite 中已经存在用户，后续修改 bootstrap 环境变量不会重置已有账号。
+
 默认 sandbox 镜像可配置为：
 
 ```text
@@ -157,6 +175,15 @@ $env:MGHANDS_SANDBOX_INTERNAL_PORT="3000"
 ```
 
 Gateway 会使用 Docker 随机发布到 `127.0.0.1` 的宿主端口，不要求你手工分配端口。
+
+在 Docker Compose 部署中，Gateway 容器不能通过自身的 `127.0.0.1` 访问宿主机发布端口。Compose 已设置：
+
+```text
+MGHANDS_SANDBOX_NETWORK=mghands
+MGHANDS_SANDBOX_USE_INTERNAL_NETWORK=true
+```
+
+启用后 Gateway 会跳过 `docker port` 查询，直接使用 Docker 内部 DNS URL `http://mghands-<session_id>:3000` 等待 sandbox 就绪。非 Compose 本地运行默认仍使用宿主发布端口模式。
 
 ### Sandbox 工作区
 

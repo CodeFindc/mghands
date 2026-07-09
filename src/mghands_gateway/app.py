@@ -7,7 +7,8 @@ from typing import Annotated, Any
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from mghands_gateway.auth import (
     generate_access_token,
@@ -804,6 +805,25 @@ def _extract_conversation_id(info: dict[str, Any]) -> str:
     if not value:
         raise RuntimeError('agent-server did not return conversation id')
     return str(value)
+
+
+def _mount_web_app() -> None:
+    web_dist = Path(__file__).resolve().parents[2] / 'web' / 'dist'
+    index_file = web_dist / 'index.html'
+    assets_dir = web_dist / 'assets'
+    if not index_file.exists():
+        return
+    if assets_dir.exists():
+        app.mount('/assets', StaticFiles(directory=assets_dir), name='web-assets')
+
+    @app.get('/{path:path}', include_in_schema=False)
+    async def web_app(path: str) -> FileResponse:
+        if path.startswith('api/'):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, 'not found')
+        return FileResponse(index_file)
+
+
+_mount_web_app()
 
 
 def main() -> None:

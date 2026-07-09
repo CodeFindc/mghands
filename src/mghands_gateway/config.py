@@ -30,6 +30,10 @@ class Settings(BaseSettings):
         default=None,
         description='Optional Docker network for sandbox containers.',
     )
+    sandbox_use_internal_network: bool = Field(
+        default=False,
+        description='Use Docker network DNS instead of published host ports for sandbox URLs.',
+    )
     sandbox_command: str | None = Field(
         default=None,
         description='Optional command override for the sandbox container.',

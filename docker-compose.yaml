@@ -1,0 +1,36 @@
+services:
+  gateway:
+    build: .
+    image: mghands-gateway:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - mghands-data:/data/mghands
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      MGHANDS_DATA_ROOT: /data/mghands
+      MGHANDS_DATABASE_PATH: /data/mghands/sessions.sqlite3
+      MGHANDS_SANDBOX_WORKSPACE_ROOT: /data/mghands/workspaces
+      MGHANDS_SHARED_SKILLS_ROOT: /data/mghands/shared_skills
+      MGHANDS_SANDBOX_IMAGE: mghands-sandbox:latest
+      MGHANDS_SANDBOX_NETWORK: mghands
+      MGHANDS_SANDBOX_USE_INTERNAL_NETWORK: "true"
+      MGHANDS_BOOTSTRAP_ADMIN_USERNAME: ${MGHANDS_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      MGHANDS_BOOTSTRAP_ADMIN_PASSWORD: ${MGHANDS_BOOTSTRAP_ADMIN_PASSWORD:-change-me-now}
+    networks:
+      - mghands
+
+  sandbox-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: mghands-sandbox:latest
+    profiles:
+      - build-only
+
+volumes:
+  mghands-data:
+
+networks:
+  mghands:
+    name: mghands
