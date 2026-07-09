@@ -1058,11 +1058,25 @@ def _extract_conversation_id(info: dict[str, Any]) -> str:
 
 
 def _mount_web_app() -> None:
-    web_dist = Path(__file__).resolve().parents[2] / 'web' / 'dist'
+    possible_roots = [
+        Path(__file__).resolve().parents[2],
+        Path(__file__).resolve().parents[1],
+        Path.cwd(),
+    ]
+    web_dist = None
+    for r in possible_roots:
+        candidate = r / 'web' / 'dist'
+        if (candidate / 'index.html').exists():
+            web_dist = candidate
+            break
+
+    if not web_dist:
+        print("WARNING: Web app dist directory not found! Web UI will not be served.", flush=True)
+        return
+
+    print(f"INFO: Mounting web app from {web_dist}", flush=True)
     index_file = web_dist / 'index.html'
     assets_dir = web_dist / 'assets'
-    if not index_file.exists():
-        return
     if assets_dir.exists():
         app.mount('/assets', StaticFiles(directory=assets_dir), name='web-assets')
 
