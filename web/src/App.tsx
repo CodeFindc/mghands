@@ -728,7 +728,8 @@ function MainApp() {
     return events.filter(e => {
       if (!e) return false;
       const kind = e.kind || '';
-      return kind.includes('ActionEvent') || kind.includes('ObservationEvent') || kind === 'agent.result' || kind === 'agent.error';
+      return (kind.includes('Action') || kind.includes('Observation') || kind === 'agent.result' || kind === 'agent.error') &&
+             !kind.includes('Message');
     });
   }, [events]);
 
@@ -1358,7 +1359,7 @@ function MainApp() {
                                        !String(event.kind || '').includes('Message')) ||
                                        String(event.kind || '').includes('SystemPromptEvent');
                     const eventId = event.id || `local-${index}`;
-                    const isCollapsed = collapsedTools[eventId] ?? true;
+                    const isCollapsed = collapsedTools[eventId] ?? (String(event.kind || '').includes('SystemPromptEvent') ? true : false);
 
                     if (isToolCall) {
                       return (
