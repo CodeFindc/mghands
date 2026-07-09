@@ -795,9 +795,11 @@ async def stream(
     event_id = after or request.headers.get('last-event-id')
     generator = _event_stream(session_id, event_id, store, agent_client, settings, request)
     headers = {
-        'Cache-Control': 'no-cache',
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
+        'X-Content-Type-Options': 'nosniff',
     }
     return StreamingResponse(generator, media_type='text/event-stream', headers=headers)
 
@@ -847,13 +849,23 @@ async def _event_stream(
         record = await store.require(session_id)
         if not record.conversation_id:
             return
-        page = await agent_client.search_events(
-            _require_sandbox_url(record),
-            _session_api_key_value(record),
-            record.conversation_id,
-            page_id=str(offset) if offset > 0 else None,
-            limit=100,
-        )
+        try:
+            page = await agent_client.search_events(
+                _require_sandbox_url(record),
+                _session_api_key_value(record),
+                record.conversation_id,
+                page_id=str(offset) if offset > 0 else None,
+                limit=100,
+            )
+        except Exception as exc:
+            print(f"WARNING: error polling events from sandbox (session_id={session_id}): {exc}", flush=True)
+            await asyncio.sleep(settings.sse_poll_seconds)
+            idle_for += settings.sse_poll_seconds
+            heartbeat_for += settings.sse_poll_seconds
+            if heartbeat_for >= settings.sse_heartbeat_seconds:
+                heartbeat_for = 0.0
+                yield ': heartbeat\n\n'.encode('utf-8')
+            continue
         emitted = False
         if isinstance(page, dict):
             items = page.get('items', [])
