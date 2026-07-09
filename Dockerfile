@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/mghands
 
 RUN apt-get -o Acquire::AllowInsecureRepositories=true -o Acquire::AllowDowngradeToInsecureRepositories=true update \
-    && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates curl docker-cli \
+    && apt-get install -y --no-install-recommends --allow-unauthenticated ca-certificates curl docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
