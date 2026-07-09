@@ -72,6 +72,34 @@ function eventPreview(event: TimelineEvent): string {
   return JSON.stringify(data, null, 2);
 }
 
+function toolNameMeta(event: TimelineEvent): string {
+  const raw = event.data?.raw as any;
+  if (!raw) return '';
+
+  const action = raw.action;
+  if (action) {
+    if (typeof action === 'string') return action;
+    if (typeof action === 'object') {
+      if (action.command) return `command: ${action.command}`;
+      if (action.path) return `path: ${action.path}`;
+      if (action.kind) return action.kind;
+      return JSON.stringify(action);
+    }
+  }
+
+  const observation = raw.observation;
+  if (observation) {
+    if (typeof observation === 'string') return observation;
+    if (typeof observation === 'object') {
+      if (observation.kind) return observation.kind;
+      return JSON.stringify(observation);
+    }
+  }
+
+  return raw.event_type || event.kind || '';
+}
+
+
 function statusLabel(status?: string | null): string {
   if (status === 'created') return '已创建';
   if (status === 'running') return '运行中';
@@ -1300,7 +1328,7 @@ function MainApp() {
                             <div className="tool-header-info">
                               <Wrench size={14} className="tool-icon" />
                               <strong>{eventTitle(event)}</strong>
-                              <span className="tool-name-meta">{(event.data?.raw as any)?.action || (event.data?.raw as any)?.observation || ''}</span>
+                              <span className="tool-name-meta">{toolNameMeta(event)}</span>
                             </div>
                             <span className="tool-toggle-icon">
                               {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
