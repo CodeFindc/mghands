@@ -25,10 +25,15 @@ async function request<T>(path: string, token: string | null, init: RequestInit 
   if (!response.ok) {
     let detail: unknown = response.statusText;
     try {
-      const body = await response.json();
-      detail = body.detail ?? body;
+      const text = await response.text();
+      try {
+        const body = JSON.parse(text);
+        detail = body.detail ?? body;
+      } catch {
+        detail = text || response.statusText;
+      }
     } catch {
-      detail = await response.text();
+      // ignore read error
     }
     throw new ApiError(response.status, detail);
   }
