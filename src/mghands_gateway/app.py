@@ -534,7 +534,7 @@ async def list_project_files(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> list[dict[str, Any]]:
     project = await _get_project_or_404(store, project_id, current_user)
-    workspace_dir = _project_workspace(settings, project.user_id, project_id)
+    workspace_dir = Path(project.workspace_dir)
     if not workspace_dir.exists():
         return []
 
@@ -570,7 +570,7 @@ async def read_project_file(
 ) -> dict[str, Any]:
     project = await _get_project_or_404(store, project_id, current_user)
 
-    workspace_dir = _project_workspace(settings, project.user_id, project_id)
+    workspace_dir = Path(project.workspace_dir)
     clean_path = str(path).lstrip('/').lstrip('\\')
     safe_path = (workspace_dir / clean_path).resolve()
     if workspace_dir != safe_path and workspace_dir not in safe_path.parents:
@@ -1269,7 +1269,7 @@ async def _create_project_record(
     name: str,
 ) -> ProjectRecord:
     project_id = new_id('prj')
-    workspace_dir = _project_workspace(settings, user_id, project_id)
+    workspace_dir = _project_workspace(settings, user_id, name)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     return await store.create_project(
         ProjectRecord(
@@ -1281,11 +1281,25 @@ async def _create_project_record(
     )
 
 
-def _project_workspace(settings: Settings, user_id: str, project_id: str) -> Path:
+def _project_workspace(settings: Settings, user_id: str, folder_name: str) -> Path:
     data_root = settings.data_root.resolve()
+    # Sanitize folder_name to be filesystem safe
+    safe_folder_name = "".join(c for c in folder_name if c not in r'\/:*?"<>|').strip()
+    if not safe_folder_name:
+        safe_folder_name = "unnamed_project"
+
     workspace = (
-        data_root / 'users' / user_id / 'projects' / project_id / 'workspace'
+        data_root / 'users' / user_id / 'projects' / safe_folder_name / 'workspace'
     ).resolve()
+
+    # Ensure uniqueness by appending counter if directory exists
+    counter = 1
+    while workspace.exists():
+        workspace = (
+            data_root / 'users' / user_id / 'projects' / f'{safe_folder_name}_{counter}' / 'workspace'
+        ).resolve()
+        counter += 1
+
     if data_root != workspace and data_root not in workspace.parents:
         raise RuntimeError('project workspace escapes data root')
     return workspace
@@ -1346,6 +1360,13 @@ async def _create_session_for_project(
                 )
             _require_user_sandbox_encryption(settings)
             mount_root = settings.user_sandbox_mount_path.rstrip('/')
+            user_root_path = (settings.data_root.resolve() / 'users' / current_user.user_id).resolve()
+            try:
+                rel_path = Path(project.workspace_dir).relative_to(user_root_path)
+                conversation_working_dir = f'{mount_root}/{rel_path}'
+            except ValueError:
+                conversation_working_dir = f'{mount_root}/projects/{project.project_id}/workspace'
+
             record = SessionRecord(
                 session_id=request.session_id,
                 project_id=project.project_id,
@@ -1354,9 +1375,7 @@ async def _create_session_for_project(
                 sandbox_type=request.sandbox_type,
                 workspace_policy=request.workspace_policy,
                 workspace_dir=project.workspace_dir,
-                conversation_working_dir=(
-                    f'{mount_root}/projects/{project.project_id}/workspace'
-                ),
+                conversation_working_dir=conversation_working_dir,
                 status=SessionStatus.CREATED,
             )
             return SessionResponse.from_record(await store.create(record))
@@ -1497,14 +1516,24 @@ async def _resolve_sandbox_for_record(
             record.sandbox_id = sandbox.sandbox_id
             await store.save(record)
         mount_root = settings.user_sandbox_mount_path.rstrip('/')
+        project = await store.get_project(record.project_id)
+        if project:
+            user_root_path = (settings.data_root.resolve() / 'users' / user_id).resolve()
+            try:
+                rel_path = Path(project.workspace_dir).relative_to(user_root_path)
+                working_dir = f'{mount_root}/{rel_path}'
+            except ValueError:
+                working_dir = f'{mount_root}/projects/{record.project_id}/workspace'
+        else:
+            working_dir = f'{mount_root}/projects/{record.project_id}/workspace'
+
         return ResolvedSandbox(
             sandbox_id=sandbox.sandbox_id,
             sandbox_url=handle.sandbox_url,
             sandbox_api_key=api_key,
             container_name=sandbox.container_name,
             generation=sandbox.generation,
-            working_dir=record.conversation_working_dir
-            or f'{mount_root}/projects/{record.project_id}/workspace',
+            working_dir=record.conversation_working_dir or working_dir,
             persistence_dir=f'{mount_root}/.mghands/conversations',
         )
     except Exception as exc:

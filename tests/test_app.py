@@ -303,8 +303,8 @@ def test_user_scoped_sandbox_is_lazy_shared_and_not_deleted_with_session(tmp_pat
         )
         assert executed.status_code == 200
         assert backend.ensure_calls == 1
-        assert agent.started[0][1]['working_dir'].endswith(
-            f"projects/{first_project['project_id']}/workspace"
+        assert agent.started[0][1]['working_dir'].replace('\\', '/').endswith(
+            "projects/One/workspace"
         )
         assert agent.started[0][1]['persistence_dir'] == '/userspace/.mghands/conversations'
 

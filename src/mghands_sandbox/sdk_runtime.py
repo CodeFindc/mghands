@@ -453,6 +453,14 @@ class _OfficialSDKAdapter:
             return
 
     def build(self, request: StartConversationRequest, runtime: RuntimeConversation) -> Any:
+        import uuid
+        conv_id_str = request.conversation_id or runtime.info.id
+        try:
+            raw_hex = conv_id_str.split('_')[-1].replace('-', '')
+            conv_id_uuid = uuid.UUID(raw_hex)
+        except ValueError:
+            conv_id_uuid = conv_id_str
+
         official = self._build_official_conversation(request, runtime)
         if official is not None:
             if request.restore:
@@ -465,7 +473,7 @@ class _OfficialSDKAdapter:
             conversation_cls = getattr(conversation_mod, 'Conversation')
         agent = self._build_default_agent(request, runtime)
         direct_kwargs = {
-            'conversation_id': request.conversation_id or runtime.info.id,
+            'conversation_id': conv_id_uuid,
             'callbacks': [self._build_event_callback(runtime)],
         }
         if request.persistence_dir:
@@ -489,6 +497,14 @@ class _OfficialSDKAdapter:
         back to the narrower Conversation constructor.
         """
         try:
+            import uuid
+            conv_id_str = request.conversation_id or runtime.info.id
+            try:
+                raw_hex = conv_id_str.split('_')[-1].replace('-', '')
+                conv_id_uuid = uuid.UUID(raw_hex)
+            except ValueError:
+                conv_id_uuid = conv_id_str
+
             sdk = importlib.import_module('openhands.sdk')
             settings_mod = importlib.import_module('openhands.sdk.settings')
             tools_mod = self._import_first(
@@ -536,7 +552,7 @@ class _OfficialSDKAdapter:
             agent = agent_settings.create_agent()
 
             direct_kwargs: dict[str, Any] = {
-                'conversation_id': request.conversation_id or runtime.info.id,
+                'conversation_id': conv_id_uuid,
                 'callbacks': callbacks,
             }
             if request.persistence_dir:
@@ -546,7 +562,7 @@ class _OfficialSDKAdapter:
 
             conv_kwargs: dict[str, Any] = {
                 'agent_settings': agent_settings,
-                'conversation_id': request.conversation_id or runtime.info.id,
+                'conversation_id': conv_id_uuid,
                 'agent_definitions': agent_definitions,
             }
             if workspace is not None:

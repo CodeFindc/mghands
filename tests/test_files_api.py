@@ -51,14 +51,10 @@ def test_files_api_crud_and_traversal_check(tmp_path) -> None:
         assert resp.status_code == 201
         project_id = resp.json()['project_id']
 
-        # Get workspace directory (same formula as _project_workspace)
-        # data_root / 'users' / user_id / 'projects' / project_id / 'workspace'
         store = _store(tmp_path)
-        db_user = asyncio.run(store.get_user_by_username('user1'))
-        assert db_user is not None
-        user_id = db_user.user_id
-
-        workspace_dir = tmp_path / 'data' / 'users' / user_id / 'projects' / project_id / 'workspace'
+        db_project = asyncio.run(store.get_project(project_id))
+        assert db_project is not None
+        workspace_dir = Path(db_project.workspace_dir)
         workspace_dir.mkdir(parents=True, exist_ok=True)
 
         # Write dummy files

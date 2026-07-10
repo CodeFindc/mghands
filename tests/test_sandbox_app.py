@@ -283,7 +283,7 @@ def test_sdk_adapter_does_not_pass_initial_message_to_conversation_settings(monk
 
     assert conversation.kwargs['agent'] == 'agent'
     assert callable(conversation.kwargs['callbacks'][0])
-    assert conversation.kwargs['conversation_id'] == runtime.info.id
+    assert conversation.kwargs['conversation_id'] == runtime.info.id or str(conversation.kwargs['conversation_id']).replace('-', '') == runtime.info.id
     assert 'initial_message' not in captured['conversation_settings']
 
 
