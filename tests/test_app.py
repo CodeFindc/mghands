@@ -164,7 +164,7 @@ def test_create_session_allows_docker_sandbox(tmp_path) -> None:
         )
         assert response.status_code == 201
         assert response.json()['sandbox_id'] == 'sandbox-1'
-        assert response.json()['project_id'].startswith('prj_')
+        assert len(response.json()['project_id']) == 32
     finally:
         app.dependency_overrides.clear()
 
@@ -304,7 +304,7 @@ def test_user_scoped_sandbox_is_lazy_shared_and_not_deleted_with_session(tmp_pat
         assert executed.status_code == 200
         assert backend.ensure_calls == 1
         assert agent.started[0][1]['working_dir'].replace('\\', '/').endswith(
-            "projects/One/workspace"
+            f"projects/{first_project['project_id']}/workspace"
         )
         assert agent.started[0][1]['persistence_dir'] == '/userspace/.mghands/conversations'
 

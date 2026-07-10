@@ -1268,8 +1268,8 @@ async def _create_project_record(
     user_id: str,
     name: str,
 ) -> ProjectRecord:
-    project_id = new_id('prj')
-    workspace_dir = _project_workspace(settings, user_id, name)
+    project_id = uuid4().hex
+    workspace_dir = _project_workspace(settings, user_id, project_id)
     workspace_dir.mkdir(parents=True, exist_ok=True)
     return await store.create_project(
         ProjectRecord(
@@ -1281,24 +1281,11 @@ async def _create_project_record(
     )
 
 
-def _project_workspace(settings: Settings, user_id: str, folder_name: str) -> Path:
+def _project_workspace(settings: Settings, user_id: str, project_id: str) -> Path:
     data_root = settings.data_root.resolve()
-    # Sanitize folder_name to be filesystem safe
-    safe_folder_name = "".join(c for c in folder_name if c not in r'\/:*?"<>|').strip()
-    if not safe_folder_name:
-        safe_folder_name = "unnamed_project"
-
     workspace = (
-        data_root / 'users' / user_id / 'projects' / safe_folder_name / 'workspace'
+        data_root / 'users' / user_id / 'projects' / project_id / 'workspace'
     ).resolve()
-
-    # Ensure uniqueness by appending counter if directory exists
-    counter = 1
-    while workspace.exists():
-        workspace = (
-            data_root / 'users' / user_id / 'projects' / f'{safe_folder_name}_{counter}' / 'workspace'
-        ).resolve()
-        counter += 1
 
     if data_root != workspace and data_root not in workspace.parents:
         raise RuntimeError('project workspace escapes data root')
