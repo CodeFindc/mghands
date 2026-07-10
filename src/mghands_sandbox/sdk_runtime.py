@@ -28,6 +28,23 @@ class SDKUnavailableError(RuntimeError):
     pass
 
 
+def _create_symlink(link_path_str: str, target_path_str: str) -> None:
+    try:
+        link_path = Path(link_path_str)
+        if link_path.exists() or link_path.is_symlink():
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            else:
+                import shutil
+                shutil.rmtree(link_path)
+        
+        Path(target_path_str).mkdir(parents=True, exist_ok=True)
+        os.symlink(target_path_str, link_path_str)
+        print(f"Created symlink {link_path_str} -> {target_path_str}")
+    except Exception as e:
+        print(f"Failed to create symlink {link_path_str}: {e}")
+
+
 class SDKBuildError(RuntimeError):
     pass
 
@@ -75,6 +92,14 @@ class SDKRuntime:
         persistence_dir: str | None = None,
         max_concurrent_runs: int = 1,
     ):
+        target_userspace = os.getenv('MGHANDS_SANDBOX_SHARED_VOLUME_USERSPACE')
+        if target_userspace:
+            _create_symlink('/userspace', target_userspace)
+
+        target_workspace = os.getenv('MGHANDS_SANDBOX_SHARED_VOLUME_WORKSPACE')
+        if target_workspace:
+            _create_symlink('/workspace', target_workspace)
+
         self._conversations: dict[str, RuntimeConversation] = {}
         self._lock = asyncio.Lock()
         configured_root = userspace_root or os.getenv(

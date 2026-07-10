@@ -193,6 +193,7 @@ class DockerSandboxBackend:
 
         # Determine volume mount configuration
         volume_mount = ''
+        shared_env = []
         if self.settings.host_data_root:
             # Option A: host directory bind mount
             host_workspace_dir = workspace_dir
@@ -215,8 +216,13 @@ class DockerSandboxBackend:
         else:
             # Option B: Named volume mghands-data
             volume_mount = 'mghands-data:/data/mghands'
-            # Override the userspace root to point to the shared volume subpath
-            userspace_root = str(workspace_dir)
+            # Determine target scope (user vs session) and pass to sandbox to create symlink
+            actual_mount_path = mount_path or self.settings.sandbox_workspace_mount_path
+            if actual_mount_path == '/userspace':
+                shared_env = ['-e', f'MGHANDS_SANDBOX_SHARED_VOLUME_USERSPACE={workspace_dir}']
+            else:
+                shared_env = ['-e', f'MGHANDS_SANDBOX_SHARED_VOLUME_WORKSPACE={workspace_dir}']
+            userspace_root = None
 
         container_args = [
             'run',
@@ -240,6 +246,8 @@ class DockerSandboxBackend:
             '--cap-drop',
             'ALL',
         ]
+        if shared_env:
+            container_args.extend(shared_env)
         if userspace_root:
             container_args.extend(['-e', f'MGHANDS_SANDBOX_USERSPACE_ROOT={userspace_root}'])
         for key, value in (labels or {}).items():
