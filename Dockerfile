@@ -26,6 +26,7 @@ COPY --from=web-build /opt/mghands/web/dist ./web/dist
 
 RUN python -m pip install --no-cache-dir \
     'bcrypt>=4.1.0' \
+    'cryptography>=42.0.0' \
     'fastapi>=0.115.0' \
     'httpx>=0.27.0' \
     'pydantic-settings>=2.5.0' \
