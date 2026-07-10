@@ -196,23 +196,23 @@ class DockerSandboxBackend:
         shared_env = []
         if self.settings.host_data_root:
             # Option A: host directory bind mount
-            host_workspace_dir = workspace_dir
-            try:
-                rel_path = workspace_dir.relative_to(self.settings.data_root.resolve())
-                host_workspace_dir = self.settings.host_data_root / rel_path
-            except ValueError:
-                pass
-
-            host_workspace_path_str = str(host_workspace_dir)
-            if len(host_workspace_path_str) >= 2 and host_workspace_path_str[1] == ':':
-                drive = host_workspace_path_str[0].lower()
-                rest = host_workspace_path_str[2:].replace('\\', '/')
+            # We mount the entire host data root to /data/mghands in the sandbox container
+            host_data_root_str = str(self.settings.host_data_root)
+            if len(host_data_root_str) >= 2 and host_data_root_str[1] == ':':
+                drive = host_data_root_str[0].lower()
+                rest = host_data_root_str[2:].replace('\\', '/')
                 if not rest.startswith('/'):
                     rest = '/' + rest
-                host_workspace_path_str = f'/{drive}{rest}'
+                host_data_root_str = f'/{drive}{rest}'
 
-            mount_path = mount_path or self.settings.sandbox_workspace_mount_path
-            volume_mount = f'{host_workspace_path_str}:{mount_path}'
+            volume_mount = f'{host_data_root_str}:/data/mghands'
+            # Determine target scope (user vs session) and pass to sandbox to create symlink
+            actual_mount_path = mount_path or self.settings.sandbox_workspace_mount_path
+            if actual_mount_path == '/userspace':
+                shared_env = ['-e', f'MGHANDS_SANDBOX_SHARED_VOLUME_USERSPACE={workspace_dir}']
+            else:
+                shared_env = ['-e', f'MGHANDS_SANDBOX_SHARED_VOLUME_WORKSPACE={workspace_dir}']
+            userspace_root = None
         else:
             # Option B: Named volume mghands-data
             volume_mount = 'mghands-data:/data/mghands'
