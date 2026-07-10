@@ -195,7 +195,7 @@ class DockerSandboxBackend:
         if self.settings.host_data_root:
             try:
                 rel_path = workspace_dir.relative_to(self.settings.data_root.resolve())
-                host_workspace_dir = self.settings.host_data_root.resolve() / rel_path
+                host_workspace_dir = self.settings.host_data_root / rel_path
             except ValueError:
                 pass
 
