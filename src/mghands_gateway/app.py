@@ -619,7 +619,7 @@ async def list_project_sessions(
 ) -> list[SessionResponse]:
     project = await _get_project_or_404(store, project_id, current_user)
     records = await store.list_sessions_for_project(project.project_id)
-    return [SessionResponse.from_record(r) for r in records]
+    return [SessionResponse.from_record(r) for r in records if r.status != SessionStatus.DELETED]
 
 
 @app.get('/api/v1/projects/{project_id}/skills', response_model=list[ProjectSkillResponse])

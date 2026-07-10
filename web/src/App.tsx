@@ -1053,7 +1053,31 @@ function MainApp() {
                   >
                     <div className="session-item-row">
                       <span className="session-item-title">{s.session_id.substring(0, 16)}...</span>
-                      <span className={`session-state-dot ${s.status}`}></span>
+                      <div className="session-item-actions">
+                        <span className={`session-state-dot ${s.status}`}></span>
+                        <button
+                          className="session-delete-btn"
+                          title="删除会话"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (window.confirm("确定要删除该会话吗？")) {
+                              try {
+                                await api.deleteSession(token, s.session_id);
+                                if (session?.session_id === s.session_id) {
+                                  setSession(null);
+                                }
+                                if (selectedProjectId) {
+                                  await loadSessions(selectedProjectId);
+                                }
+                              } catch (err) {
+                                alert("删除失败: " + errorMessage(err));
+                              }
+                            }
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
                     <div className="session-item-meta">
                       <small>{formattedTime}</small>

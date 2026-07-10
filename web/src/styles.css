@@ -1548,3 +1548,34 @@ dd {
   margin-top: 0.4rem;
 }
 
+.session-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.session-delete-btn {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: #94a3b8;
+  border-radius: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.2s ease-in-out;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.project:hover .session-delete-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-delete-btn:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.15);
+}
+
