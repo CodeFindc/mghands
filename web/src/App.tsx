@@ -1983,6 +1983,8 @@ function MainApp() {
               <aside className="inspector">
                 <div className="panel-title"><Wrench size={18} /> 会话详情</div>
                 <dl>
+                  <dt>项目名称</dt>
+                  <dd>{selectedProject?.name || '未选择'}</dd>
                   <dt>Session ID</dt>
                   <dd>{session?.session_id || '未创建'}</dd>
                   <dt>Conversation</dt>
