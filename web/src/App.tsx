@@ -513,18 +513,81 @@ function MainApp() {
     setIsAdminView(false);
   }
 
-  async function createProject(event: FormEvent) {
-    event.preventDefault();
-    if (!token || !projectName.trim()) return;
+  async function selectProject(projId: string) {
+    if (!token) return;
+    setSelectedProjectId(projId);
+    setEvents([]);
+    setSession(null);
+    try {
+      const list = await api.listProjectSessions(token, projId);
+      let activeSess: Session | null = null;
+      if (list.length > 0) {
+        activeSess = list[0];
+      } else {
+        activeSess = await api.createProjectSession(token, projId);
+      }
+      setSession(activeSess);
+      if (activeSess) {
+        const map = { ...sessionMap, [projId]: activeSess.session_id };
+        saveSessionMap(map);
+        setSessionMap(map);
+        void refreshHistory(activeSess.session_id);
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && typeof e.detail === 'object' && e.detail) {
+        const runningId = (e.detail as { running_session_id?: string }).running_session_id;
+        if (runningId) {
+          try {
+            const next = await api.getSession(token, runningId);
+            const map = { ...sessionMap, [projId]: runningId };
+            saveSessionMap(map);
+            setSessionMap(map);
+            setSession(next);
+            void refreshHistory(runningId);
+          } catch (err) {
+            setNotice(errorMessage(err));
+          }
+        }
+      } else {
+        setNotice(errorMessage(e));
+      }
+    }
+  }
+
+  async function createChat() {
+    if (!token) return;
+    const name = window.prompt("请输入新会话名称:", `会话 - ${new Date().toLocaleString()}`);
+    if (name === null) return;
+    const finalName = name.trim() || `会话 - ${new Date().toLocaleString()}`;
     setBusy(true);
     try {
-      const project = await api.createProject(token, projectName.trim(), selectedSkillNames);
-      setProjects((items) => [project, ...items]);
-      setSelectedProjectId(project.project_id);
-      setProjectName('');
-      setNotice('项目已创建');
+      const project = await api.createProject(token, finalName, selectedSkillNames);
+      const list = await api.projects(token);
+      setProjects(list);
+      await selectProject(project.project_id);
     } catch (error) {
       setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteChat(projId: string, event: React.MouseEvent) {
+    event.stopPropagation();
+    if (!token) return;
+    if (!window.confirm("确定要删除该会话及其所有历史记录吗？")) return;
+    setBusy(true);
+    try {
+      await api.deleteProject(token, projId);
+      if (selectedProjectId === projId) {
+        setSelectedProjectId(null);
+        setSession(null);
+        setEvents([]);
+      }
+      const list = await api.projects(token);
+      setProjects(list);
+    } catch (error) {
+      alert("删除失败: " + errorMessage(error));
     } finally {
       setBusy(false);
     }
@@ -1005,94 +1068,54 @@ function MainApp() {
           </>
         ) : (
           <>
-            <div className="project-select-block">
-              <label className="sidebar-field-label">当前项目</label>
-              <select
-                className="premium-select sidebar-select"
-                value={selectedProjectId || ''}
-                onChange={(e) => {
-                  setSelectedProjectId(e.target.value || null);
-                  setSelectedFilePath(null);
-                }}
-              >
-                {projects.map((proj) => (
-                  <option key={proj.project_id} value={proj.project_id}>{proj.name}</option>
-                ))}
-                {!projects.length && <option value="">无可用项目</option>}
-              </select>
-            </div>
-
-            <div className="sidebar-title-row">
+            <div className="sidebar-title-row" style={{ marginTop: '0.5rem' }}>
               <span className="sidebar-title-text">会话历史</span>
               <button
                 className="new-session-mini-btn"
                 title="新建会话"
-                onClick={() => void ensureSession()}
-                disabled={!selectedProjectId || busy}
+                onClick={() => void createChat()}
+                disabled={busy}
               >
                 <Plus size={15} />
               </button>
             </div>
 
             <nav className="project-list">
-              {sessions.map((s) => {
-                const isSelected = session?.session_id === s.session_id;
-                const formattedTime = new Date(s.updated_at).toLocaleTimeString();
+              {projects.map((proj) => {
+                const isSelected = selectedProjectId === proj.project_id;
+                const projSession = (selectedProjectId === proj.project_id) ? session : null;
+                const statusDot = projSession ? <span className={`session-state-dot ${projSession.status}`}></span> : null;
+                const statusBadge = projSession ? <span className="session-status-badge">{statusLabel(projSession.status)}</span> : null;
+
                 return (
                   <button
-                    key={s.session_id}
+                    key={proj.project_id}
                     className={`project ${isSelected ? 'active' : ''}`}
-                    onClick={() => {
-                      setSession(s);
-                      if (s.conversation_id) {
-                        void refreshHistory(s.session_id);
-                      } else {
-                        setEvents([]);
-                      }
-                    }}
+                    onClick={() => void selectProject(proj.project_id)}
                   >
                     <div className="session-item-row">
-                      <span className="session-item-title">{s.session_id.substring(0, 16)}...</span>
+                      <span className="session-item-title">{proj.name}</span>
                       <div className="session-item-actions">
-                        <span className={`session-state-dot ${s.status}`}></span>
+                        {statusDot}
                         <button
                           className="session-delete-btn"
                           title="删除会话"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (window.confirm("确定要删除该会话吗？")) {
-                              try {
-                                await api.deleteSession(token, s.session_id);
-                                if (session?.session_id === s.session_id) {
-                                  setSession(null);
-                                }
-                                if (selectedProjectId) {
-                                  await loadSessions(selectedProjectId);
-                                }
-                              } catch (err) {
-                                alert("删除失败: " + errorMessage(err));
-                              }
-                            }
-                          }}
+                          onClick={(e) => void deleteChat(proj.project_id, e)}
                         >
                           <Trash2 size={13} />
                         </button>
                       </div>
                     </div>
-                    <div className="session-item-meta">
-                      <small>{formattedTime}</small>
-                      <span className="session-status-badge">{statusLabel(s.status)}</span>
-                    </div>
+                    {statusBadge && (
+                      <div className="session-item-meta" style={{ justifyContent: 'flex-end' }}>
+                        {statusBadge}
+                      </div>
+                    )}
                   </button>
                 );
               })}
-              {!sessions.length && <div className="empty-mini">该项目下暂无会话，请点击右上角或上方新建</div>}
+              {!projects.length && <div className="empty-mini">暂无会话，请点击右上角新建</div>}
             </nav>
-
-            <form className="project-form" onSubmit={createProject}>
-              <input placeholder="创建新项目" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-              <button disabled={busy || !projectName.trim()}><FolderPlus size={17} /></button>
-            </form>
 
             <div className="skill-strip">
               <span><Sparkles size={15} /> 默认技能配置</span>

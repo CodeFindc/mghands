@@ -65,6 +65,12 @@ export const api = {
     });
   },
 
+  deleteProject(token: string, projectId: string) {
+    return request<Project>(`/projects/${projectId}`, token, {
+      method: 'DELETE',
+    });
+  },
+
   createProjectSession(token: string, projectId: string) {
     return request<Session>(`/projects/${projectId}/sessions`, token, {
       method: 'POST',
