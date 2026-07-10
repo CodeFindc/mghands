@@ -729,8 +729,7 @@ async def delete_session(
             record, settings, store, sandbox_backend
         )
     except Exception:
-        if record.sandbox_scope == SandboxScope.SESSION:
-            raise
+        pass
 
     # Pre-fetch and cache conversation events before tearing down the sandbox container
     events = []
@@ -746,21 +745,20 @@ async def delete_session(
         except Exception:
             pass
 
-    try:
-        if record.conversation_id and resolved:
+    if record.conversation_id and resolved:
+        try:
             await agent_client.delete_conversation(
                 resolved.sandbox_url,
                 resolved.sandbox_api_key,
                 record.conversation_id,
             )
-        if record.sandbox_scope == SandboxScope.SESSION:
+        except Exception:
+            pass
+    if record.sandbox_scope == SandboxScope.SESSION:
+        try:
             await sandbox_backend.delete(record.container_name)
-    except Exception as exc:
-        record.events = events
-        record.status = SessionStatus.ERROR
-        record.error = _safe_error(exc)
-        await store.save(record)
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, record.error) from exc
+        except Exception:
+            pass
 
     record.events = events
     record.status = SessionStatus.DELETED
