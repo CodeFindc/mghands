@@ -15,6 +15,8 @@ from mghands_sandbox.models import (
 )
 from mghands_sandbox.sdk_runtime import (
     SDKBuildError,
+    ConversationBusyError,
+    ConversationConflictError,
     SDKRunError,
     SDKRuntime,
     SDKUnavailableError,
@@ -101,6 +103,10 @@ async def start_conversation(request: StartConversationRequest):
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
     except SDKRunError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    except ConversationConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
 
 @app.get('/api/conversations', dependencies=[Depends(verify_session_key)])
@@ -134,6 +140,8 @@ async def send_event(conversation_id: str, request: MessageRequest):
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'conversation not found') from exc
     except SDKRunError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+    except ConversationBusyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @app.get(
@@ -164,6 +172,8 @@ async def update_runtime(conversation_id: str, request: UpdateRuntimeRequest):
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'conversation not found') from exc
     except SDKUnavailableError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except ConversationBusyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 @app.get('/api/conversations/{conversation_id}/runtime', dependencies=[Depends(verify_session_key)])

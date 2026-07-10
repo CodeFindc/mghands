@@ -169,14 +169,20 @@ class SkillManager:
             raise FileNotFoundError('skill not found')
         shutil.rmtree(target)
 
-    def build_skill_specs(self, workspace_dir: Path, records: list[ProjectSkillRecord]) -> list[SkillSpec]:
+    def build_skill_specs(
+        self,
+        workspace_dir: Path,
+        records: list[ProjectSkillRecord],
+        workspace_mount_path: str | None = None,
+    ) -> list[SkillSpec]:
         specs: list[SkillSpec] = []
+        mount_path = (workspace_mount_path or self.workspace_mount_path).rstrip('/')
         for record in records:
             target = self._target_dir(workspace_dir, record.skill_name)
             skill_md = target / 'SKILL.md'
             if not skill_md.exists():
                 continue
-            container_dir = f'{self.workspace_mount_path}/.mghands/skills/{record.skill_name}'
+            container_dir = f'{mount_path}/.mghands/skills/{record.skill_name}'
             content = f'SKILL_DIR={container_dir}\n\n{skill_md.read_text(encoding="utf-8")}'
             specs.append(
                 SkillSpec(

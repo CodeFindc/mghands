@@ -1,3 +1,9 @@
+import asyncio
+import threading
+import time
+from functools import wraps
+
+import pytest
 from fastapi.testclient import TestClient
 
 from mghands_sandbox.app import app
@@ -6,8 +12,26 @@ from mghands_sandbox.models import (
     LLMConfig,
     MessageRequest,
     StartConversationRequest,
+    EventRecord,
+    TextContent,
 )
-from mghands_sandbox.sdk_runtime import RuntimeConversation, _OfficialSDKAdapter, _sdk_event_payload
+from mghands_sandbox.sdk_runtime import (
+    ConversationBusyError,
+    ConversationConflictError,
+    RuntimeConversation,
+    SDKRuntime,
+    _OfficialSDKAdapter,
+    _sdk_event_payload,
+)
+
+
+def async_test(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(func(*args, **kwargs))
+
+    return wrapper
+
 
 
 def test_sandbox_alive() -> None:
@@ -375,3 +399,251 @@ def test_sdk_adapter_resets_conversation_terminal_status() -> None:
 
     assert result == 'done'
     assert runtime.sdk_conversation.state.status == 'idle'
+
+
+def test_sdk_adapter_passes_persistence_dir_to_direct_constructor(tmp_path, monkeypatch) -> None:
+    class FakeConversation:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeSDKModule:
+        Conversation = FakeConversation
+
+    request = StartConversationRequest(
+        conversation_id='stable-id',
+        working_dir=str(tmp_path),
+        persistence_dir=str(tmp_path / 'conversations'),
+        restore=True,
+    )
+    runtime = RuntimeConversation(info=ConversationInfo(id='stable-id'))
+    adapter = _OfficialSDKAdapter()
+    monkeypatch.setattr(adapter, '_build_official_conversation', lambda request, runtime: None)
+    monkeypatch.setattr(adapter, '_build_default_agent', lambda request, runtime: 'agent')
+    monkeypatch.setattr(
+        'mghands_sandbox.sdk_runtime.importlib.import_module',
+        lambda name: FakeSDKModule,
+    )
+
+    conversation = adapter.build(request, runtime)
+
+    assert conversation.kwargs['conversation_id'] == 'stable-id'
+    assert conversation.kwargs['persistence_dir'] == str(tmp_path / 'conversations')
+    assert callable(conversation.kwargs['callbacks'][0])
+
+
+def test_sdk_event_callback_uses_stable_sdk_id_and_deduplicates() -> None:
+    class FakeEvent:
+        id = 'stable-sdk-event'
+        timestamp = '2026-07-10T00:00:00'
+        source = 'agent'
+
+        def model_dump(self, mode='json'):
+            return {'id': self.id}
+
+    runtime = RuntimeConversation(info=ConversationInfo())
+    callback = _OfficialSDKAdapter()._build_event_callback(runtime)
+
+    callback(FakeEvent())
+    callback(FakeEvent())
+
+    assert [event.id for event in runtime.events] == ['stable-sdk-event']
+
+
+@async_test
+async def test_runtime_validates_containment_and_rejects_duplicate_id(
+    tmp_path, monkeypatch
+) -> None:
+    userspace = tmp_path / 'userspace'
+    userspace.mkdir()
+    runtime = SDKRuntime(userspace_root=str(userspace))
+    monkeypatch.setattr(runtime, '_ensure_sdk_available', lambda: None)
+    captured = {}
+
+    def build(request, runtime_conversation):
+        captured['request'] = request
+        return object()
+
+    monkeypatch.setattr(runtime, '_build_sdk_conversation', build)
+    request = StartConversationRequest(
+        conversation_id='stable-id',
+        working_dir='projects/project-1/workspace',
+        restore=True,
+    )
+
+    info = await runtime.create_conversation(request)
+    assert info.working_dir == str(userspace / 'projects/project-1/workspace')
+    assert captured['request'].persistence_dir == str(userspace / '.mghands/conversations')
+    with pytest.raises(ConversationConflictError):
+        await runtime.create_conversation(request)
+    with pytest.raises(ValueError, match='working_dir must be within'):
+        await runtime.create_conversation(
+            StartConversationRequest(working_dir=str(tmp_path / 'outside'))
+        )
+    with pytest.raises(ValueError, match='persistence_dir must be within'):
+        await runtime.create_conversation(
+            StartConversationRequest(persistence_dir=str(tmp_path / 'outside'))
+        )
+
+
+def test_runtime_uses_configured_userspace_root(tmp_path, monkeypatch) -> None:
+    userspace = tmp_path / 'configured-userspace'
+    userspace.mkdir()
+    monkeypatch.setenv('MGHANDS_SANDBOX_USERSPACE_ROOT', str(userspace))
+
+    runtime = SDKRuntime()
+
+    assert runtime.runtime_info().workspace_dir == str(userspace)
+
+
+def test_sdk_adapter_restores_durable_events_with_stable_ids() -> None:
+    class FakeEvent:
+        id = 'persisted-event'
+        source = 'agent'
+        timestamp = '2026-07-10T00:00:00'
+
+        def model_dump(self, mode='json'):
+            return {'id': self.id}
+
+    class FakeState:
+        events = [FakeEvent()]
+
+    class FakeConversation:
+        state = FakeState()
+
+    runtime = RuntimeConversation(info=ConversationInfo())
+
+    _OfficialSDKAdapter().restore_events(FakeConversation(), runtime)
+
+    assert [event.id for event in runtime.events] == ['persisted-event']
+
+
+def test_sdk_event_callback_generates_stable_id_when_sdk_id_is_missing() -> None:
+    class FakeEvent:
+        source = 'agent'
+        timestamp = '2026-07-10T00:00:00'
+
+        def model_dump(self, mode='json'):
+            return {'source': self.source, 'message': 'same event'}
+
+    first_runtime = RuntimeConversation(info=ConversationInfo())
+    second_runtime = RuntimeConversation(info=ConversationInfo())
+
+    _OfficialSDKAdapter()._build_event_callback(first_runtime)(FakeEvent())
+    _OfficialSDKAdapter()._build_event_callback(second_runtime)(FakeEvent())
+
+    assert first_runtime.events[0].id.startswith('sdk-')
+    assert first_runtime.events[0].id == second_runtime.events[0].id
+
+
+@async_test
+async def test_runtime_rejects_parallel_run_for_same_conversation(tmp_path) -> None:
+    runtime = SDKRuntime(userspace_root=str(tmp_path))
+    conversation = RuntimeConversation(info=ConversationInfo(id='one'))
+    runtime._conversations['one'] = conversation
+    release = threading.Event()
+    runtime._run_sdk_conversation = lambda runtime, message: release.wait(1)
+    message = MessageRequest(content=[{'type': 'text', 'text': 'run'}])
+
+    await runtime.send_message('one', message)
+    with pytest.raises(ConversationBusyError):
+        await runtime.send_message('one', message)
+    release.set()
+    await conversation.execution_task
+
+
+@async_test
+async def test_runtime_serializes_runs_across_conversations(tmp_path) -> None:
+    runtime = SDKRuntime(userspace_root=str(tmp_path))
+    conversations = [
+        RuntimeConversation(info=ConversationInfo(id=conversation_id))
+        for conversation_id in ('one', 'two')
+    ]
+    runtime._conversations.update({item.info.id: item for item in conversations})
+    state = {'active': 0, 'maximum': 0}
+    state_lock = threading.Lock()
+
+    def run(runtime_conversation, message):
+        with state_lock:
+            state['active'] += 1
+            state['maximum'] = max(state['maximum'], state['active'])
+        time.sleep(0.05)
+        with state_lock:
+            state['active'] -= 1
+
+    runtime._run_sdk_conversation = run
+    message = MessageRequest(content=[{'type': 'text', 'text': 'run'}])
+
+    await asyncio.gather(
+        runtime.send_message('one', message),
+        runtime.send_message('two', message),
+    )
+    await asyncio.gather(*(item.execution_task for item in conversations))
+
+    assert state['maximum'] == 1
+
+
+@async_test
+async def test_delete_cancels_registered_execution_task(tmp_path) -> None:
+    runtime = SDKRuntime(userspace_root=str(tmp_path))
+    conversation = RuntimeConversation(info=ConversationInfo(id='one'))
+    runtime._conversations['one'] = conversation
+    release = threading.Event()
+    runtime._run_sdk_conversation = lambda runtime, message: release.wait(1)
+    message = MessageRequest(content=[{'type': 'text', 'text': 'run'}])
+
+    await runtime.send_message('one', message)
+    assert await runtime.delete_conversation('one') is True
+    release.set()
+
+    assert conversation.execution_task.cancelled()
+    assert 'one' not in runtime._tasks
+    assert await runtime.get_conversation('one') is None
+
+
+def test_unmatched_action_detection(tmp_path, monkeypatch) -> None:
+    events = [
+        EventRecord(id='act-1', kind='openhands.CmdRunAction', data={}),
+    ]
+    from mghands_sandbox.sdk_runtime import _find_unmatched_action, _is_action_read_only
+    has_unmatched, unmatched = _find_unmatched_action(events)
+    assert has_unmatched is True
+    assert unmatched.id == 'act-1'
+    assert _is_action_read_only(unmatched) is False
+
+    events_ro = [
+        EventRecord(id='act-2', kind='openhands.FileReadAction', data={}),
+    ]
+    has_unmatched_ro, unmatched_ro = _find_unmatched_action(events_ro)
+    assert has_unmatched_ro is True
+    assert unmatched_ro.id == 'act-2'
+    assert _is_action_read_only(unmatched_ro) is True
+
+
+@async_test
+async def test_resume_empty_message_sdk_run(tmp_path, monkeypatch) -> None:
+    class FakeConversation:
+        def __init__(self):
+            self.run_called = False
+            self.send_message_called = False
+            self.state = None
+        def run(self, *args, **kwargs):
+            self.run_called = True
+            return "done"
+        def send_message(self, *args, **kwargs):
+            self.send_message_called = True
+
+    conv = FakeConversation()
+    runtime = RuntimeConversation(info=ConversationInfo(id='test'), sdk_conversation=conv)
+    adapter = _OfficialSDKAdapter()
+    
+    msg_non_empty = MessageRequest(content=[TextContent(text="hello")], run=True)
+    await asyncio.to_thread(adapter.run, runtime, msg_non_empty)
+    assert conv.send_message_called is True
+    assert conv.run_called is True
+
+    conv_resume = FakeConversation()
+    runtime_resume = RuntimeConversation(info=ConversationInfo(id='test'), sdk_conversation=conv_resume)
+    msg_empty = MessageRequest(content=[TextContent(text=" ")], run=True)
+    await asyncio.to_thread(adapter.run, runtime_resume, msg_empty)
+    assert conv_resume.send_message_called is False
+    assert conv_resume.run_called is True

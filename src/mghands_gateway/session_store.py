@@ -2,6 +2,8 @@ import asyncio
 import json
 import sqlite3
 import threading
+import secrets
+from datetime import timedelta
 from pathlib import Path
 
 from mghands_gateway.models import (
@@ -11,7 +13,10 @@ from mghands_gateway.models import (
     ProjectStatus,
     SessionRecord,
     SessionStatus,
+    SandboxLeaseKind,
     UserRecord,
+    UserSandboxRecord,
+    UserSandboxStatus,
     utc_now,
     LLMModelRecord,
 )
@@ -38,6 +43,7 @@ class SessionStore:
                     password_hash TEXT NOT NULL,
                     role TEXT NOT NULL,
                     enabled INTEGER NOT NULL,
+                    sandbox_scope TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 )
@@ -117,9 +123,62 @@ class SessionStore:
             )
             self._ensure_column(db, 'sessions', 'user_id', 'TEXT')
             self._ensure_column(db, 'sessions', 'project_id', 'TEXT')
+            self._ensure_column(db, 'users', 'sandbox_scope', 'TEXT')
+            self._ensure_column(db, 'sessions', 'sandbox_scope', "TEXT NOT NULL DEFAULT 'session'")
+            self._ensure_column(db, 'sessions', 'sandbox_generation', 'INTEGER')
+            self._ensure_column(db, 'sessions', 'conversation_working_dir', 'TEXT')
+            self._ensure_column(db, 'sessions', 'status', "TEXT NOT NULL DEFAULT 'created'")
+            self._ensure_column(db, 'sessions', 'conversation_id', 'TEXT')
+            self._ensure_column(db, 'sessions', 'version', 'INTEGER NOT NULL DEFAULT 0')
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_sandboxes (
+                    user_id TEXT PRIMARY KEY,
+                    sandbox_id TEXT NOT NULL UNIQUE,
+                    container_name TEXT NOT NULL UNIQUE,
+                    sandbox_url TEXT,
+                    api_key_ciphertext BLOB NOT NULL,
+                    api_key_key_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    image_ref TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    last_activity_at TEXT NOT NULL,
+                    idle_expires_at TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_sandbox_leases (
+                    user_id TEXT NOT NULL,
+                    lease_kind TEXT NOT NULL,
+                    holder_id TEXT NOT NULL,
+                    lease_token TEXT NOT NULL UNIQUE,
+                    acquired_at TEXT NOT NULL,
+                    renewed_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, lease_kind)
+                )
+                """
+            )
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_secrets (
+                    session_id TEXT PRIMARY KEY,
+                    ciphertext BLOB NOT NULL,
+                    key_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)')
             db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)')
             db.execute('CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id)')
+            db.execute('CREATE INDEX IF NOT EXISTS idx_sessions_owner_status ON sessions(user_id, status)')
+            db.execute('CREATE INDEX IF NOT EXISTS idx_user_sandboxes_idle ON user_sandboxes(status, idle_expires_at)')
             db.commit()
 
     def _ensure_column(self, db: sqlite3.Connection, table: str, name: str, column_type: str) -> None:
@@ -147,13 +206,14 @@ class SessionStore:
     def _create_user_sync(self, record: UserRecord) -> None:
         with self._lock, sqlite3.connect(self.database_path) as db:
             db.execute(
-                'INSERT INTO users(user_id, username, password_hash, role, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO users(user_id, username, password_hash, role, enabled, sandbox_scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 (
                     record.user_id,
                     record.username,
                     record.password_hash,
                     record.role.value,
                     int(record.enabled),
+                    record.sandbox_scope.value if record.sandbox_scope else None,
                     record.created_at.isoformat(),
                     record.updated_at.isoformat(),
                 ),
@@ -188,8 +248,8 @@ class SessionStore:
     def _update_user_sync(self, record: UserRecord) -> int:
         with self._lock, sqlite3.connect(self.database_path) as db:
             cursor = db.execute(
-                'UPDATE users SET password_hash = ?, role = ?, enabled = ?, updated_at = ? WHERE user_id = ?',
-                (record.password_hash, record.role.value, int(record.enabled), record.updated_at.isoformat(), record.user_id),
+                'UPDATE users SET password_hash = ?, role = ?, enabled = ?, sandbox_scope = ?, updated_at = ? WHERE user_id = ?',
+                (record.password_hash, record.role.value, int(record.enabled), record.sandbox_scope.value if record.sandbox_scope else None, record.updated_at.isoformat(), record.user_id),
             )
             db.commit()
             return cursor.rowcount
@@ -340,7 +400,7 @@ class SessionStore:
         )
         for row in rows:
             record = SessionRecord.model_validate_json(row['data'])
-            if record.status in {SessionStatus.CREATED, SessionStatus.RUNNING}:
+            if record.status in {SessionStatus.CREATED, SessionStatus.QUEUED, SessionStatus.RUNNING, SessionStatus.RECOVERING}:
                 return record
         return None
 
@@ -355,7 +415,7 @@ class SessionStore:
     def _create_sync(self, record: SessionRecord) -> None:
         with self._lock, sqlite3.connect(self.database_path) as db:
             db.execute(
-                'INSERT INTO sessions(session_id, user_id, project_id, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+                'INSERT INTO sessions(session_id, user_id, project_id, sandbox_scope, sandbox_generation, conversation_working_dir, status, conversation_id, version, data, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 self._to_row(record),
             )
             db.commit()
@@ -384,10 +444,16 @@ class SessionStore:
     def _save_sync(self, record: SessionRecord) -> int:
         with self._lock, sqlite3.connect(self.database_path) as db:
             cursor = db.execute(
-                'UPDATE sessions SET user_id = ?, project_id = ?, data = ?, updated_at = ? WHERE session_id = ?',
+                'UPDATE sessions SET user_id = ?, project_id = ?, sandbox_scope = ?, sandbox_generation = ?, conversation_working_dir = ?, status = ?, conversation_id = ?, version = ?, data = ?, updated_at = ? WHERE session_id = ?',
                 (
                     record.created_by_user_id,
                     record.project_id,
+                    record.sandbox_scope.value,
+                    record.sandbox_generation,
+                    record.conversation_working_dir,
+                    record.status.value,
+                    record.conversation_id,
+                    record.version,
                     self._serialize_record(record),
                     record.updated_at.isoformat(),
                     record.session_id,
@@ -408,6 +474,7 @@ class SessionStore:
         return record
 
     async def list_sessions_for_project(self, project_id: str) -> list[SessionRecord]:
+        await self.init()
         rows = await asyncio.to_thread(self._list_sessions_for_project_sync, project_id)
         records = []
         for r in rows:
@@ -425,12 +492,56 @@ class SessionStore:
             )
             return [row[0] for row in cursor.fetchall()]
 
+    async def get_running_sessions_for_user(self, user_id: str) -> list[SessionRecord]:
+        await self.init()
+        rows = await asyncio.to_thread(self._get_running_sessions_for_user_sync, user_id)
+        records = []
+        for r in rows:
+            try:
+                records.append(SessionRecord.model_validate_json(r))
+            except Exception:
+                pass
+        return records
 
-    def _to_row(self, record: SessionRecord) -> tuple[str, str | None, str | None, str, str, str]:
+    def _get_running_sessions_for_user_sync(self, user_id: str) -> list[str]:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            cursor = db.execute(
+                "SELECT data FROM sessions WHERE user_id = ? AND status = 'running'",
+                (user_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    async def get_active_sessions_for_user(self, user_id: str) -> list[SessionRecord]:
+        await self.init()
+        rows = await asyncio.to_thread(self._get_active_sessions_for_user_sync, user_id)
+        records = []
+        for r in rows:
+            try:
+                records.append(SessionRecord.model_validate_json(r))
+            except Exception:
+                pass
+        return records
+
+    def _get_active_sessions_for_user_sync(self, user_id: str) -> list[str]:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            cursor = db.execute(
+                "SELECT data FROM sessions WHERE user_id = ? AND status IN ('created', 'queued', 'running', 'interrupted', 'recovering')",
+                (user_id,),
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+
+    def _to_row(self, record: SessionRecord) -> tuple[object, ...]:
         return (
             record.session_id,
             record.created_by_user_id,
             record.project_id,
+            record.sandbox_scope.value,
+            record.sandbox_generation,
+            record.conversation_working_dir,
+            record.status.value,
+            record.conversation_id,
+            record.version,
             self._serialize_record(record),
             record.created_at.isoformat(),
             record.updated_at.isoformat(),
@@ -462,6 +573,7 @@ class SessionStore:
             password_hash=row['password_hash'],
             role=row['role'],
             enabled=bool(row['enabled']),
+            sandbox_scope=row['sandbox_scope'],
             created_at=row['created_at'],
             updated_at=row['updated_at'],
         )
@@ -495,6 +607,265 @@ class SessionStore:
             source_fingerprint=row['source_fingerprint'],
             metadata=json.loads(row['metadata']),
             installed_at=row['installed_at'],
+            updated_at=row['updated_at'],
+        )
+
+    async def get_user_sandbox(self, user_id: str) -> UserSandboxRecord | None:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone, 'SELECT * FROM user_sandboxes WHERE user_id = ?', (user_id,)
+        )
+        return self._user_sandbox_from_row(row) if row else None
+
+    async def list_user_sandboxes(self) -> list[UserSandboxRecord]:
+        await self.init()
+        rows = await asyncio.to_thread(
+            self._fetchall, 'SELECT * FROM user_sandboxes ORDER BY created_at', ()
+        )
+        return [self._user_sandbox_from_row(row) for row in rows]
+
+    async def begin_user_sandbox_generation(
+        self,
+        record: UserSandboxRecord,
+    ) -> UserSandboxRecord:
+        await self.init()
+        return await asyncio.to_thread(self._begin_user_sandbox_generation_sync, record)
+
+    def _begin_user_sandbox_generation_sync(
+        self, record: UserSandboxRecord
+    ) -> UserSandboxRecord:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute(
+                'SELECT * FROM user_sandboxes WHERE user_id = ?', (record.user_id,)
+            ).fetchone()
+            if existing and existing['status'] not in {
+                UserSandboxStatus.DELETED.value,
+                UserSandboxStatus.UNHEALTHY.value,
+            }:
+                db.rollback()
+                return self._user_sandbox_from_row(existing)
+            record.generation = int(existing['generation']) + 1 if existing else 1
+            record.created_at = utc_now()
+            record.updated_at = record.created_at
+            db.execute(
+                """
+                INSERT INTO user_sandboxes(
+                    user_id, sandbox_id, container_name, sandbox_url,
+                    api_key_ciphertext, api_key_key_id, generation, image_ref,
+                    status, last_activity_at, idle_expires_at, error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    sandbox_id=excluded.sandbox_id,
+                    container_name=excluded.container_name,
+                    sandbox_url=excluded.sandbox_url,
+                    api_key_ciphertext=excluded.api_key_ciphertext,
+                    api_key_key_id=excluded.api_key_key_id,
+                    generation=excluded.generation,
+                    image_ref=excluded.image_ref,
+                    status=excluded.status,
+                    last_activity_at=excluded.last_activity_at,
+                    idle_expires_at=excluded.idle_expires_at,
+                    error=excluded.error,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at
+                """,
+                self._user_sandbox_row(record),
+            )
+            db.commit()
+            return record
+
+    async def save_user_sandbox(self, record: UserSandboxRecord) -> UserSandboxRecord:
+        await self.init()
+        record.updated_at = utc_now()
+        count = await asyncio.to_thread(self._save_user_sandbox_sync, record)
+        if count == 0:
+            raise KeyError(record.user_id)
+        return record
+
+    def _save_user_sandbox_sync(self, record: UserSandboxRecord) -> int:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            cursor = db.execute(
+                """
+                UPDATE user_sandboxes SET sandbox_id=?, container_name=?, sandbox_url=?,
+                    api_key_ciphertext=?, api_key_key_id=?, image_ref=?, status=?,
+                    last_activity_at=?, idle_expires_at=?, error=?, updated_at=?
+                WHERE user_id=? AND generation=?
+                """,
+                (
+                    record.sandbox_id,
+                    record.container_name,
+                    record.sandbox_url,
+                    record.api_key_ciphertext,
+                    record.api_key_key_id,
+                    record.image_ref,
+                    record.status.value,
+                    record.last_activity_at.isoformat(),
+                    record.idle_expires_at.isoformat() if record.idle_expires_at else None,
+                    record.error,
+                    record.updated_at.isoformat(),
+                    record.user_id,
+                    record.generation,
+                ),
+            )
+            db.commit()
+            return cursor.rowcount
+
+    async def acquire_user_sandbox_lease(
+        self,
+        user_id: str,
+        kind: SandboxLeaseKind,
+        holder_id: str,
+        ttl_seconds: int,
+    ) -> str | None:
+        await self.init()
+        return await asyncio.to_thread(
+            self._acquire_user_sandbox_lease_sync,
+            user_id,
+            kind,
+            holder_id,
+            ttl_seconds,
+        )
+
+    def _acquire_user_sandbox_lease_sync(
+        self,
+        user_id: str,
+        kind: SandboxLeaseKind,
+        holder_id: str,
+        ttl_seconds: int,
+    ) -> str | None:
+        now = utc_now()
+        expires_at = now + timedelta(seconds=ttl_seconds)
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            db.row_factory = sqlite3.Row
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute(
+                'SELECT * FROM user_sandbox_leases WHERE user_id=? AND lease_kind=?',
+                (user_id, kind.value),
+            ).fetchone()
+            if row and row['expires_at'] > now.isoformat() and row['holder_id'] != holder_id:
+                db.rollback()
+                return None
+            token = row['lease_token'] if row and row['holder_id'] == holder_id else secrets.token_urlsafe(32)
+            db.execute(
+                """
+                INSERT INTO user_sandbox_leases(
+                    user_id, lease_kind, holder_id, lease_token,
+                    acquired_at, renewed_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, lease_kind) DO UPDATE SET
+                    holder_id=excluded.holder_id,
+                    lease_token=excluded.lease_token,
+                    renewed_at=excluded.renewed_at,
+                    expires_at=excluded.expires_at
+                """,
+                (
+                    user_id,
+                    kind.value,
+                    holder_id,
+                    token,
+                    now.isoformat(),
+                    now.isoformat(),
+                    expires_at.isoformat(),
+                ),
+            )
+            db.commit()
+            return token
+
+    async def release_user_sandbox_lease(
+        self, user_id: str, kind: SandboxLeaseKind, token: str | None = None
+    ) -> bool:
+        await self.init()
+        query = 'DELETE FROM user_sandbox_leases WHERE user_id=? AND lease_kind=?'
+        args: tuple[object, ...] = (user_id, kind.value)
+        if token is not None:
+            query += ' AND lease_token=?'
+            args += (token,)
+        return bool(await asyncio.to_thread(self._execute_count, query, args))
+
+    async def has_user_sandbox_lease(
+        self, user_id: str, kind: SandboxLeaseKind
+    ) -> bool:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone,
+            'SELECT 1 FROM user_sandbox_leases WHERE user_id=? AND lease_kind=? AND expires_at>?',
+            (user_id, kind.value, utc_now().isoformat()),
+        )
+        return row is not None
+
+    def _execute_count(self, query: str, args: tuple[object, ...]) -> int:
+        with self._lock, sqlite3.connect(self.database_path) as db:
+            cursor = db.execute(query, args)
+            db.commit()
+            return cursor.rowcount
+
+    async def save_session_secret(
+        self, session_id: str, ciphertext: bytes, key_id: str
+    ) -> None:
+        await self.init()
+        await asyncio.to_thread(
+            self._execute,
+            """
+            INSERT INTO session_secrets(session_id, ciphertext, key_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                ciphertext=excluded.ciphertext,
+                key_id=excluded.key_id,
+                updated_at=excluded.updated_at
+            """,
+            (session_id, ciphertext, key_id, utc_now().isoformat()),
+        )
+
+    async def get_session_secret(self, session_id: str) -> tuple[bytes, str] | None:
+        await self.init()
+        row = await asyncio.to_thread(
+            self._fetchone,
+            'SELECT ciphertext, key_id FROM session_secrets WHERE session_id=?',
+            (session_id,),
+        )
+        return (row['ciphertext'], row['key_id']) if row else None
+
+    async def delete_session_secret(self, session_id: str) -> None:
+        await self.init()
+        await asyncio.to_thread(
+            self._execute, 'DELETE FROM session_secrets WHERE session_id=?', (session_id,)
+        )
+
+    def _user_sandbox_row(self, record: UserSandboxRecord) -> tuple[object, ...]:
+        return (
+            record.user_id,
+            record.sandbox_id,
+            record.container_name,
+            record.sandbox_url,
+            record.api_key_ciphertext,
+            record.api_key_key_id,
+            record.generation,
+            record.image_ref,
+            record.status.value,
+            record.last_activity_at.isoformat(),
+            record.idle_expires_at.isoformat() if record.idle_expires_at else None,
+            record.error,
+            record.created_at.isoformat(),
+            record.updated_at.isoformat(),
+        )
+
+    def _user_sandbox_from_row(self, row: sqlite3.Row) -> UserSandboxRecord:
+        return UserSandboxRecord(
+            user_id=row['user_id'],
+            sandbox_id=row['sandbox_id'],
+            container_name=row['container_name'],
+            sandbox_url=row['sandbox_url'],
+            api_key_ciphertext=row['api_key_ciphertext'],
+            api_key_key_id=row['api_key_key_id'],
+            generation=row['generation'],
+            image_ref=row['image_ref'],
+            status=row['status'],
+            last_activity_at=row['last_activity_at'],
+            idle_expires_at=row['idle_expires_at'],
+            error=row['error'],
+            created_at=row['created_at'],
             updated_at=row['updated_at'],
         )
 

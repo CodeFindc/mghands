@@ -57,9 +57,12 @@ def redact_sensitive(value: Any) -> Any:
 
 class SessionStatus(StrEnum):
     CREATED = 'created'
+    QUEUED = 'queued'
     RUNNING = 'running'
     COMPLETED = 'completed'
     ERROR = 'error'
+    INTERRUPTED = 'interrupted'
+    RECOVERING = 'recovering'
     DELETED = 'deleted'
 
 
@@ -77,6 +80,25 @@ class SandboxType(StrEnum):
     DOCKER = 'docker'
     PROCESS = 'process'
     REMOTE = 'remote'
+
+
+class SandboxScope(StrEnum):
+    SESSION = 'session'
+    USER = 'user'
+
+
+class UserSandboxStatus(StrEnum):
+    PROVISIONING = 'provisioning'
+    READY = 'ready'
+    BUSY = 'busy'
+    UNHEALTHY = 'unhealthy'
+    DELETING = 'deleting'
+    DELETED = 'deleted'
+
+
+class SandboxLeaseKind(StrEnum):
+    PROVISIONING = 'provisioning'
+    EXECUTION = 'execution'
 
 
 class WorkspacePolicy(StrEnum):
@@ -157,6 +179,10 @@ class SessionRecord(BaseModel):
     sandbox_api_key: SecretStr | None = None
     container_name: str | None = None
     conversation_id: str | None = None
+    sandbox_scope: SandboxScope = SandboxScope.SESSION
+    sandbox_generation: int | None = Field(default=None, ge=1)
+    conversation_working_dir: str | None = None
+    version: int = Field(default=0, ge=0)
     created_by_user_id: str | None = None
     sandbox_type: SandboxType = SandboxType.DOCKER
     workspace_policy: WorkspacePolicy = WorkspacePolicy.ISOLATED
@@ -185,6 +211,8 @@ class SessionResponse(BaseModel):
     sandbox_id: str | None
     sandbox_url: str | None = None
     conversation_id: str | None
+    sandbox_scope: SandboxScope = SandboxScope.SESSION
+    sandbox_generation: int | None = None
     status: SessionStatus
     created_at: datetime
     updated_at: datetime
@@ -225,6 +253,7 @@ class UserRecord(BaseModel):
     password_hash: str
     role: UserRole = UserRole.USER
     enabled: bool = True
+    sandbox_scope: SandboxScope | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -234,6 +263,7 @@ class UserResponse(BaseModel):
     username: str
     role: UserRole
     enabled: bool
+    sandbox_scope: SandboxScope | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -268,6 +298,41 @@ class CreateUserRequest(BaseModel):
 class UpdateUserRequest(BaseModel):
     enabled: bool | None = None
     role: UserRole | None = None
+    sandbox_scope: SandboxScope | None = None
+
+
+class UserSandboxRecord(BaseModel):
+    user_id: str
+    sandbox_id: str
+    container_name: str
+    sandbox_url: str | None = None
+    api_key_ciphertext: bytes
+    api_key_key_id: str
+    generation: int = Field(ge=1)
+    image_ref: str
+    status: UserSandboxStatus = UserSandboxStatus.PROVISIONING
+    last_activity_at: datetime = Field(default_factory=utc_now)
+    idle_expires_at: datetime | None = None
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class UserSandboxResponse(BaseModel):
+    user_id: str
+    sandbox_id: str
+    generation: int
+    image_ref: str
+    status: UserSandboxStatus
+    last_activity_at: datetime
+    idle_expires_at: datetime | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_record(cls, record: UserSandboxRecord) -> 'UserSandboxResponse':
+        return cls(**record.model_dump())
 
 
 class ResetPasswordRequest(BaseModel):
@@ -424,3 +489,6 @@ class UpdateLLMModelRequest(BaseModel):
     api_key: str | None = None
     is_default: bool | None = None
 
+
+class ConfirmRecoveryRequest(BaseModel):
+    confirm: bool = True

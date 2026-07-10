@@ -67,8 +67,21 @@ class AgentServerClient:
         llm: LLMOverride | None,
         skills: list[SkillSpec] | None = None,
         mcp_config: MCPConfigSpec | None = None,
+        *,
+        conversation_id: str | None = None,
+        working_dir: str | None = None,
+        persistence_dir: str | None = None,
+        restore: bool = False,
     ) -> dict[str, Any]:
         payload = _start_conversation_payload(task, llm, skills, mcp_config)
+        if conversation_id:
+            payload['conversation_id'] = conversation_id
+        if working_dir:
+            payload['working_dir'] = working_dir
+        if persistence_dir:
+            payload['persistence_dir'] = persistence_dir
+        if restore:
+            payload['restore'] = True
         return await self.request(
             base_url,
             session_api_key,

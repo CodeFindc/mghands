@@ -1,8 +1,11 @@
 import asyncio
+import hashlib
 import importlib
 import json
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from mghands_sandbox.models import (
@@ -33,14 +36,27 @@ class SDKRunError(RuntimeError):
     pass
 
 
+class ConversationBusyError(RuntimeError):
+    pass
+
+
+class ConversationConflictError(RuntimeError):
+    pass
+
+
 @dataclass
 class RuntimeConversation:
     info: ConversationInfo
     llm: LLMConfig | None = None
     skills: list[SkillInjection] = field(default_factory=list)
+    persistence_dir: str | None = None
     mcp_config: MCPInjection | None = None
     sdk_conversation: Any = None
     events: list[EventRecord] = field(default_factory=list)
+    event_ids: set[str] = field(default_factory=set)
+    execution_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    execution_task: asyncio.Task[None] | None = None
+    deleted: bool = False
 
 
 class SDKRuntime:
@@ -52,9 +68,27 @@ class SDKRuntime:
     create/run conversations.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        userspace_root: str | None = None,
+        persistence_dir: str | None = None,
+        max_concurrent_runs: int = 1,
+    ):
         self._conversations: dict[str, RuntimeConversation] = {}
         self._lock = asyncio.Lock()
+        configured_root = userspace_root or os.getenv(
+            'MGHANDS_SANDBOX_USERSPACE_ROOT', '/userspace'
+        )
+        self._userspace_root = Path(configured_root).expanduser().resolve()
+        configured_persistence = persistence_dir or os.getenv(
+            'MGHANDS_PERSISTENCE_DIR',
+            str(self._userspace_root / '.mghands' / 'conversations'),
+        )
+        self._persistence_dir = self._contained_path(configured_persistence, 'persistence_dir')
+        self._run_semaphore = asyncio.Semaphore(max_concurrent_runs)
+        self._tasks: dict[str, asyncio.Task[None]] = {}
+
         self._status = RuntimeStatus.READY
         self._last_error: str | None = None
 
@@ -66,7 +100,7 @@ class SDKRuntime:
             return False, str(exc)
 
     def runtime_info(
-        self, *, workspace_dir: str = '/workspace', session_auth_enabled: bool = False
+        self, *, workspace_dir: str | None = None, session_auth_enabled: bool = False
     ) -> SandboxRuntimeInfo:
         sdk_available, sdk_error = self.sdk_available()
         status = self._status
@@ -81,7 +115,7 @@ class SDKRuntime:
             status=status,
             sdk_available=sdk_available,
             sdk_error=sdk_error or self._last_error,
-            workspace_dir=workspace_dir,
+            workspace_dir=workspace_dir or str(self._userspace_root),
             conversation_count=len(self._conversations),
             active_conversation_ids=list(self._conversations),
             session_auth_enabled=session_auth_enabled,
@@ -98,21 +132,57 @@ class SDKRuntime:
         self._ensure_sdk_available()
         self._last_error = None
         conversation_id = request.conversation_id or ConversationInfo().id
-        info = ConversationInfo(id=conversation_id, working_dir=request.working_dir)
+        working_dir = self._contained_path(request.working_dir or str(self._userspace_root), 'working_dir')
+        persistence_dir = self._contained_path(
+            request.persistence_dir or str(self._persistence_dir), 'persistence_dir'
+        )
+        normalized_request = request.model_copy(
+            update={
+                'conversation_id': conversation_id,
+                'working_dir': str(working_dir),
+                'persistence_dir': str(persistence_dir),
+            }
+        )
+        async with self._lock:
+            if conversation_id in self._conversations:
+                raise ConversationConflictError(
+                    f'conversation {conversation_id} already exists'
+                )
+        persistence_dir.mkdir(parents=True, exist_ok=True)
+        info = ConversationInfo(id=conversation_id, working_dir=str(working_dir))
         runtime = RuntimeConversation(
             info=info,
             llm=request.llm,
             skills=list(request.skills),
             mcp_config=request.mcp_config,
+            persistence_dir=str(persistence_dir),
         )
         try:
             runtime.sdk_conversation = await asyncio.to_thread(
-                self._build_sdk_conversation, request, runtime
+                self._build_sdk_conversation, normalized_request, runtime
             )
         except Exception as exc:
             self._last_error = str(exc)
             raise SDKBuildError(str(exc)) from exc
+        if request.restore:
+            has_unmatched, unmatched_action = _find_unmatched_action(runtime.events)
+            if has_unmatched and unmatched_action:
+                if not _is_action_read_only(unmatched_action):
+                    runtime.info.status = ConversationStatus.INTERRUPTED
+                    runtime.events.append(
+                        EventRecord(
+                            kind='conversation.interrupted',
+                            data=_redact({
+                                'detail': 'unmatched side-effect action',
+                                'action': unmatched_action.model_dump(mode='json') if hasattr(unmatched_action, 'model_dump') else unmatched_action,
+                            }),
+                        )
+                    )
         async with self._lock:
+            if conversation_id in self._conversations:
+                raise ConversationConflictError(
+                    f'conversation {conversation_id} already exists'
+                )
             self._conversations[conversation_id] = runtime
         await self._append_event(
             conversation_id,
@@ -125,7 +195,7 @@ class SDKRuntime:
                 else None,
             },
         )
-        if request.initial_message:
+        if request.initial_message and runtime.info.status != ConversationStatus.INTERRUPTED:
             await self.send_message(conversation_id, request.initial_message)
         return info
 
@@ -135,31 +205,58 @@ class SDKRuntime:
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         async with self._lock:
-            runtime = self._conversations.pop(conversation_id, None)
+            runtime = self._conversations.get(conversation_id)
         if runtime is None:
             return False
+        runtime.deleted = True
+        with suppress(Exception):
+            await asyncio.to_thread(self._stop_sdk_conversation, runtime)
+        task = runtime.execution_task
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
         runtime.info.status = ConversationStatus.DELETED
-        await self._append_event(conversation_id, 'conversation.deleted', {})
+        runtime.info.updated_at = utc_now()
+        async with self._lock:
+            self._tasks.pop(conversation_id, None)
+            self._conversations.pop(conversation_id, None)
         return True
 
     async def send_message(
         self, conversation_id: str, message: MessageRequest
     ) -> ConversationInfo:
         runtime = self._require(conversation_id)
-        await self._append_event(
-            conversation_id,
-            'message',
-            message.model_dump(mode='json'),
-        )
-        if message.run:
+        if not message.run:
+            await self._append_event(
+                conversation_id,
+                'message',
+                message.model_dump(mode='json'),
+            )
+            return runtime.info
+
+        async with runtime.execution_lock:
+            if runtime.execution_task is not None and not runtime.execution_task.done():
+                raise ConversationBusyError(
+                    f'conversation {conversation_id} is already running'
+                )
+            await self._append_event(
+                conversation_id,
+                'message',
+                message.model_dump(mode='json'),
+            )
             runtime.info.status = ConversationStatus.RUNNING
+            runtime.info.error = None
             runtime.info.updated_at = utc_now()
-            
+
             async def _run_bg() -> None:
                 try:
-                    result = await asyncio.to_thread(
-                        self._run_sdk_conversation, runtime, message
-                    )
+                    async with self._run_semaphore:
+                        result = await asyncio.to_thread(
+                            self._run_sdk_conversation, runtime, message
+                        )
+                    if runtime.deleted:
+                        return
                     runtime.info.status = ConversationStatus.COMPLETED
                     runtime.info.updated_at = utc_now()
                     await self._append_event(
@@ -167,7 +264,11 @@ class SDKRuntime:
                         'agent.result',
                         {'result': _jsonable(result)},
                     )
+                except asyncio.CancelledError:
+                    raise
                 except Exception as exc:
+                    if runtime.deleted:
+                        return
                     self._last_error = str(exc)
                     runtime.info.status = ConversationStatus.ERROR
                     runtime.info.error = str(exc)
@@ -177,8 +278,13 @@ class SDKRuntime:
                         'agent.error',
                         {'error': str(exc)},
                     )
-            
-            asyncio.create_task(_run_bg())
+                finally:
+                    if self._tasks.get(conversation_id) is asyncio.current_task():
+                        self._tasks.pop(conversation_id, None)
+
+            task = asyncio.create_task(_run_bg())
+            runtime.execution_task = task
+            self._tasks[conversation_id] = task
         return runtime.info
 
     async def get_runtime_state(self, conversation_id: str) -> ConversationRuntimeState:
@@ -199,6 +305,8 @@ class SDKRuntime:
         mcp_config: MCPInjection | None,
     ) -> ConversationInfo:
         runtime = self._require(conversation_id)
+        if runtime.execution_task is not None and not runtime.execution_task.done():
+            raise ConversationBusyError(f'conversation {conversation_id} is already running')
         if skills is not None:
             runtime.skills = skills
         if mcp_config is not None:
@@ -263,6 +371,17 @@ class SDKRuntime:
                 'openhands-sdk is not installed in this container. Build the sandbox image first.'
             )
 
+    def _contained_path(self, value: str, name: str) -> Path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = self._userspace_root / path
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(self._userspace_root)
+        except ValueError as exc:
+            raise ValueError(f'{name} must be within {self._userspace_root}') from exc
+        return resolved
+
     def _build_sdk_conversation(
         self, request: StartConversationRequest, runtime: RuntimeConversation
     ) -> Any:
@@ -276,6 +395,17 @@ class SDKRuntime:
     ) -> Any:
         return _OfficialSDKAdapter().run(runtime, message)
 
+    def _stop_sdk_conversation(self, runtime: RuntimeConversation) -> None:
+        conversation = runtime.sdk_conversation
+        if conversation is None:
+            return
+        for method_name in ('pause', 'stop'):
+            method = getattr(conversation, method_name, None)
+            if callable(method):
+                method()
+                return
+
+
 
 class _OfficialSDKAdapter:
     """Small compatibility layer around the official OpenHands SDK.
@@ -285,9 +415,23 @@ class _OfficialSDKAdapter:
     one place.
     """
 
+    def restore_events(self, conversation: Any, runtime: RuntimeConversation) -> None:
+        state = getattr(conversation, 'state', None)
+        events = getattr(state, 'events', None)
+        if events is None:
+            return
+        callback = self._build_event_callback(runtime)
+        try:
+            for event in events:
+                callback(event)
+        except (AttributeError, TypeError):
+            return
+
     def build(self, request: StartConversationRequest, runtime: RuntimeConversation) -> Any:
         official = self._build_official_conversation(request, runtime)
         if official is not None:
+            if request.restore:
+                self.restore_events(official, runtime)
             return official
         sdk = importlib.import_module('openhands.sdk')
         conversation_cls = getattr(sdk, 'Conversation', None)
@@ -295,7 +439,18 @@ class _OfficialSDKAdapter:
             conversation_mod = importlib.import_module('openhands.sdk.conversation')
             conversation_cls = getattr(conversation_mod, 'Conversation')
         agent = self._build_default_agent(request, runtime)
-        return self._instantiate_conversation(conversation_cls, agent)
+        direct_kwargs = {
+            'conversation_id': request.conversation_id or runtime.info.id,
+            'callbacks': [self._build_event_callback(runtime)],
+        }
+        if request.persistence_dir:
+            direct_kwargs['persistence_dir'] = request.persistence_dir
+        conversation = self._instantiate_conversation(
+            conversation_cls, agent, direct_kwargs=direct_kwargs
+        )
+        if request.restore:
+            self.restore_events(conversation, runtime)
+        return conversation
 
     def _build_official_conversation(
         self, request: StartConversationRequest, runtime: RuntimeConversation
@@ -359,6 +514,8 @@ class _OfficialSDKAdapter:
                 'conversation_id': request.conversation_id or runtime.info.id,
                 'callbacks': callbacks,
             }
+            if request.persistence_dir:
+                direct_kwargs['persistence_dir'] = request.persistence_dir
             if workspace is not None:
                 direct_kwargs['workspace'] = workspace
 
@@ -460,12 +617,19 @@ class _OfficialSDKAdapter:
 
     def _build_event_callback(self, runtime: RuntimeConversation):
         def on_event(event: Any) -> None:
-            runtime.events.append(
-                EventRecord(
-                    kind=f'openhands.{event.__class__.__name__}',
-                    data=_redact(_sdk_event_payload(event)),
-                )
+            if runtime.deleted:
+                return
+            payload = _sdk_event_payload(event)
+            event_id = _stable_sdk_event_id(payload)
+            if event_id in runtime.event_ids:
+                return
+            record = EventRecord(
+                id=event_id,
+                kind=f'openhands.{event.__class__.__name__}',
+                data=_redact(payload),
             )
+            runtime.events.append(record)
+            runtime.event_ids.add(record.id)
 
         return on_event
 
@@ -485,6 +649,8 @@ class _OfficialSDKAdapter:
             skills=runtime.skills,
             mcp_config=runtime.mcp_config,
             working_dir=runtime.info.working_dir,
+            persistence_dir=runtime.persistence_dir,
+            restore=True,
         )
         return self.build(request, runtime)
 
@@ -522,7 +688,9 @@ class _OfficialSDKAdapter:
         run = getattr(conversation, 'run', None)
         if run is None:
             raise RuntimeError('SDK conversation does not expose run()')
-        prompt = '\n'.join(item.text for item in message.content)
+        prompt = '\n'.join(item.text for item in message.content).strip()
+        if not prompt:
+            return run()
         send_message = getattr(conversation, 'send_message', None)
         if send_message is not None:
             send_message(prompt)
@@ -661,6 +829,14 @@ def _sdk_event_payload(event: Any) -> dict[str, Any]:
     return payload
 
 
+def _stable_sdk_event_id(payload: dict[str, Any]) -> str:
+    sdk_event_id = payload.get('sdk_event_id')
+    if sdk_event_id is not None:
+        return str(sdk_event_id)
+    serialized = json.dumps(payload, sort_keys=True, default=str, separators=(',', ':'))
+    return f'sdk-{hashlib.sha256(serialized.encode()).hexdigest()[:32]}'
+
+
 def _redact(value: Any) -> Any:
     if isinstance(value, dict):
         result = {}
@@ -678,3 +854,26 @@ def _redact(value: Any) -> Any:
 
 def _browser_tools_enabled() -> bool:
     return os.getenv('MGHANDS_ENABLE_BROWSER_TOOLS', '').lower() in {'1', 'true', 'yes'}
+
+
+def _find_unmatched_action(events: list[EventRecord]) -> tuple[bool, EventRecord | None]:
+    last_action = None
+    last_action_idx = -1
+    last_observation_idx = -1
+    for idx, event in enumerate(events):
+        if 'Action' in event.kind:
+            last_action = event
+            last_action_idx = idx
+        elif 'Observation' in event.kind:
+            last_observation_idx = idx
+    if last_action_idx > last_observation_idx:
+        return True, last_action
+    return False, None
+
+
+def _is_action_read_only(event: EventRecord) -> bool:
+    kind = event.kind
+    kind_lower = kind.lower()
+    if any(keyword in kind_lower for keyword in ('read', 'list', 'search', 'view', 'info')):
+        return True
+    return False

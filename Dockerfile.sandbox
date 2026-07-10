@@ -29,7 +29,7 @@ RUN python -m pip install --no-cache-dir \
     'opentelemetry-instrumentation==0.60b1' \
     'opentelemetry-instrumentation-threading==0.60b1'
 
-RUN mkdir -p /workspace
+RUN mkdir -p /workspace /userspace
 
 EXPOSE 3000
 

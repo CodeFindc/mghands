@@ -98,6 +98,73 @@ class DockerSandboxBackend:
             check=False,
         )
 
+    async def ensure_user_sandbox(
+        self,
+        *,
+        user_id: str,
+        generation: int,
+        user_root: Path,
+        session_api_key: str,
+        container_name: str,
+        store: object = None,
+    ) -> SandboxHandle:
+        user_root = user_root.resolve()
+        user_root.mkdir(parents=True, exist_ok=True)
+        if await asyncio.to_thread(self._container_running, container_name):
+            sandbox_url = await self._sandbox_url(container_name)
+            if await self.agent_client.alive(sandbox_url, session_api_key):
+                return SandboxHandle(
+                    sandbox_id=container_name,
+                    sandbox_url=sandbox_url,
+                    sandbox_api_key=session_api_key,
+                    container_name=container_name,
+                    workspace_dir=str(user_root),
+                )
+
+        sandbox_image = self.settings.sandbox_image
+        if store and hasattr(store, 'get_all_settings'):
+            overrides = await store.get_all_settings()
+            sandbox_image = overrides.get('sandbox_image', sandbox_image)
+        await asyncio.to_thread(
+            self._run_container,
+            container_name,
+            session_api_key,
+            user_root,
+            sandbox_image=sandbox_image,
+            mount_path=self.settings.user_sandbox_mount_path,
+            labels={
+                'mghands.scope': 'user',
+                'mghands.user_id': user_id,
+                'mghands.generation': str(generation),
+            },
+            userspace_root=self.settings.user_sandbox_mount_path,
+        )
+        sandbox_url = await self._sandbox_url(container_name)
+        try:
+            await self._wait_until_ready(sandbox_url, session_api_key)
+        except Exception:
+            await self.delete(container_name)
+            raise
+        return SandboxHandle(
+            sandbox_id=container_name,
+            sandbox_url=sandbox_url,
+            sandbox_api_key=session_api_key,
+            container_name=container_name,
+            workspace_dir=str(user_root),
+        )
+
+    async def _sandbox_url(self, container_name: str) -> str:
+        if self.settings.sandbox_use_internal_network:
+            return f'http://{container_name}:{self.settings.sandbox_internal_port}'
+        host_port = await asyncio.to_thread(self._published_port, container_name)
+        return f'http://{self.settings.sandbox_host}:{host_port}'
+
+    def _container_running(self, container_name: str) -> bool:
+        result = self._docker(
+            ['inspect', '-f', '{{.State.Running}}', container_name], check=False
+        )
+        return result.returncode == 0 and result.stdout.strip().lower() == 'true'
+
     def _prepare_workspace(self, session_id: str) -> Path:
         workspace_dir = self.settings.sandbox_workspace_root / session_id
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -113,6 +180,9 @@ class DockerSandboxBackend:
         sandbox_memory_limit: str | None = None,
         sandbox_cpus: str | None = None,
         sandbox_pids_limit: int | None = None,
+        mount_path: str | None = None,
+        labels: dict[str, str] | None = None,
+        userspace_root: str | None = None,
         **kwargs,
     ) -> None:
         self._docker(['rm', '-f', container_name], check=False)
@@ -129,6 +199,7 @@ class DockerSandboxBackend:
             except ValueError:
                 pass
 
+        mount_path = mount_path or self.settings.sandbox_workspace_mount_path
         container_args = [
             'run',
             '-d',
@@ -139,7 +210,7 @@ class DockerSandboxBackend:
             '-e',
             f'OH_SESSION_API_KEYS_0={session_api_key}',
             '-v',
-            f'{host_workspace_dir}:{self.settings.sandbox_workspace_mount_path}',
+            f'{host_workspace_dir}:{mount_path}',
             '--memory',
             sandbox_memory_limit,
             '--cpus',
@@ -148,7 +219,13 @@ class DockerSandboxBackend:
             str(sandbox_pids_limit),
             '--security-opt',
             'no-new-privileges',
+            '--cap-drop',
+            'ALL',
         ]
+        if userspace_root:
+            container_args.extend(['-e', f'MGHANDS_SANDBOX_USERSPACE_ROOT={userspace_root}'])
+        for key, value in (labels or {}).items():
+            container_args.extend(['--label', f'{key}={value}'])
         if self.settings.sandbox_network:
             container_args.extend(['--network', self.settings.sandbox_network])
         container_args.append(sandbox_image)
@@ -188,6 +265,15 @@ class DockerSandboxBackend:
             raise RuntimeError(
                 f'Docker command failed with exit code {exc.returncode}: {stderr or stdout}'
             ) from exc
+
+    def list_user_containers(self) -> list[str]:
+        result = self._docker(
+            ['ps', '-a', '--filter', 'label=mghands.scope=user', '--format', '{{.Names}}'],
+            check=False,
+        )
+        if result.returncode != 0:
+            return []
+        return [name.strip() for name in result.stdout.splitlines() if name.strip()]
 
 
 def _redact_command_text(value: str) -> str:

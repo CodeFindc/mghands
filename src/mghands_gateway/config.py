@@ -2,8 +2,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from mghands_gateway.models import SandboxScope
 
 
 class Settings(BaseSettings):
@@ -51,6 +53,18 @@ class Settings(BaseSettings):
         default='/workspace',
         description='Workspace path mounted inside each sandbox container.',
     )
+    sandbox_scope: SandboxScope = Field(
+        default=SandboxScope.SESSION,
+        description='Sandbox ownership scope for newly created sessions.',
+    )
+    user_sandbox_mount_path: str = Field(
+        default='/userspace',
+        description='User root path mounted inside user-scoped sandboxes.',
+    )
+    user_sandbox_idle_ttl_seconds: int = Field(default=1800, ge=60)
+    user_sandbox_lease_ttl_seconds: int = Field(default=900, ge=30)
+    gateway_secret_keys: dict[str, SecretStr] = Field(default_factory=dict)
+    gateway_active_secret_key_id: str | None = None
     sandbox_memory_limit: str = Field(
         default='2g',
         description='Docker memory limit for each sandbox container.',
@@ -95,6 +109,14 @@ class Settings(BaseSettings):
     sse_poll_seconds: float = 1.0
     sse_heartbeat_seconds: float = 15.0
     sse_idle_timeout_seconds: float = 300.0
+
+    @model_validator(mode='after')
+    def validate_user_sandbox_secrets(self) -> 'Settings':
+        if self.sandbox_scope == SandboxScope.USER:
+            key_id = self.gateway_active_secret_key_id
+            if not key_id or key_id not in self.gateway_secret_keys:
+                raise ValueError('user sandbox mode requires an active gateway secret key')
+        return self
 
     @field_validator('default_project_skills', mode='before')
     @classmethod

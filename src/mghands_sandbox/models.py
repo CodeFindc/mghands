@@ -15,6 +15,7 @@ class ConversationStatus(StrEnum):
     RUNNING = 'running'
     COMPLETED = 'completed'
     ERROR = 'error'
+    INTERRUPTED = 'interrupted'
     DELETED = 'deleted'
 
 
@@ -71,13 +72,15 @@ class StartConversationRequest(BaseModel):
     llm: LLMConfig | None = None
     skills: list[SkillInjection] = Field(default_factory=list)
     mcp_config: MCPInjection | None = None
-    working_dir: str = '/workspace'
+    working_dir: str | None = None
+    persistence_dir: str | None = None
+    restore: bool = False
 
 
 class ConversationInfo(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     status: ConversationStatus = ConversationStatus.CREATED
-    working_dir: str = '/workspace'
+    working_dir: str = '/userspace'
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     error: str | None = None
