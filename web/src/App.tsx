@@ -203,9 +203,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
 }
 
 function isUserMessageEvent(event: TimelineEvent): boolean {
-  if (event.kind === 'message') return true;
-  if (event.data?.source === 'user') return true;
-  return false;
+  return event.kind === 'message';
 }
 
 function isAssistantMessageEvent(event: TimelineEvent): boolean {
@@ -444,6 +442,7 @@ function MainApp() {
   const [selectedFileContent, setSelectedFileContent] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Record<string, boolean>>({});
   const [collapsedTools, setCollapsedTools] = useState<Record<string, boolean>>({});
+  const [collapsedAgentMessages, setCollapsedAgentMessages] = useState<Record<string, boolean>>({});
 
   const [customSkillName, setCustomSkillName] = useState('');
   const skillFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1226,6 +1225,10 @@ function MainApp() {
     setCollapsedTools(prev => ({ ...prev, [eventId]: !(prev[eventId] ?? true) }));
   }
 
+  function toggleAgentMessageCollapse(eventId: string) {
+    setCollapsedAgentMessages(prev => ({ ...prev, [eventId]: !prev[eventId] }));
+  }
+
   if (!token) {
     return (
       <main className="auth-shell">
@@ -1796,11 +1799,19 @@ function MainApp() {
                           }
                         }
                         if (!rawText.trim()) return null;
+                        const isCollapsed = collapsedAgentMessages[eventId] ?? false;
                         return (
                           <div key={eventId} className="chat-bubble-container agent-align">
                             <div className="chat-bubble agent-bubble">
-                              <div className="bubble-sender"><Bot size={13} /> Mghands Agent</div>
-                              <div className="bubble-content">{renderMarkdownSimple(rawText)}</div>
+                              <div className="bubble-header-toggle" onClick={() => toggleAgentMessageCollapse(eventId)}>
+                                <div className="bubble-sender"><Bot size={13} /> Mghands Agent</div>
+                                <span className="agent-bubble-chevron">
+                                  {isCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                                </span>
+                              </div>
+                              {!isCollapsed && (
+                                <div className="bubble-content">{renderMarkdownSimple(rawText)}</div>
+                              )}
                               <div className="bubble-time">{timestamp}</div>
                             </div>
                           </div>
@@ -1822,11 +1833,20 @@ function MainApp() {
                             break;
                           }
                         }
+                        const thoughtBubbleId = `${eventId}-thought`;
+                        const isThoughtCollapsed = collapsedAgentMessages[thoughtBubbleId] ?? false;
                         const thoughtBubble = thought && thought.trim() ? (
-                          <div key={`${eventId}-thought`} className="chat-bubble-container agent-align">
+                          <div key={thoughtBubbleId} className="chat-bubble-container agent-align">
                             <div className="chat-bubble agent-bubble">
-                              <div className="bubble-sender"><Bot size={13} /> Mghands Agent</div>
-                              <div className="bubble-content">{renderMarkdownSimple(thought)}</div>
+                              <div className="bubble-header-toggle" onClick={() => toggleAgentMessageCollapse(thoughtBubbleId)}>
+                                <div className="bubble-sender"><Bot size={13} /> Mghands Agent (思考)</div>
+                                <span className="agent-bubble-chevron">
+                                  {isThoughtCollapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                                </span>
+                              </div>
+                              {!isThoughtCollapsed && (
+                                <div className="bubble-content">{renderMarkdownSimple(thought)}</div>
+                              )}
                               <div className="bubble-time">{timestamp}</div>
                             </div>
                           </div>

@@ -1624,6 +1624,31 @@ dd {
   backdrop-filter: blur(12px);
 }
 
+.bubble-header-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+  width: 100%;
+  gap: 1.5rem;
+}
+
+.bubble-header-toggle .bubble-sender {
+  margin-bottom: 0;
+}
+
+.agent-bubble-chevron {
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  transition: color 150ms ease;
+}
+
+.bubble-header-toggle:hover .agent-bubble-chevron {
+  color: #38bdf8;
+}
+
 .bubble-sender {
   font-size: 0.72rem;
   font-weight: 600;
