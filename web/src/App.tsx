@@ -27,6 +27,13 @@ import {
   ChevronDown,
   FileText,
   Upload,
+  Terminal,
+  FileEdit,
+  Save,
+  AlertTriangle,
+  User as UserIcon,
+  Check,
+  Copy,
 } from 'lucide-react';
 import { ApiError, api, errorMessage } from './api';
 import type { Project, Session, SkillCatalogItem, TimelineEvent, User, LLMModel, SystemSettings, WorkspaceFile, ProjectSkill } from './types';
@@ -195,6 +202,217 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
   }
 }
 
+function isUserMessageEvent(event: TimelineEvent): boolean {
+  if (event.kind === 'message') return true;
+  if (event.data?.source === 'user') return true;
+  return false;
+}
+
+function isAssistantMessageEvent(event: TimelineEvent): boolean {
+  const kind = event.kind || '';
+  if (kind === 'openhands.MessageEvent' && event.data?.source === 'agent') return true;
+  if (kind === 'openhands.ThinkAction' || event.data?.action === 'think') return true;
+  return false;
+}
+
+function isActionEvent(event: TimelineEvent): boolean {
+  const kind = event.kind || '';
+  return kind.endsWith('Action') || kind.includes('ActionEvent');
+}
+
+function isObservationEvent(event: TimelineEvent): boolean {
+  const kind = event.kind || '';
+  return kind.endsWith('Observation') || kind.includes('ObservationEvent');
+}
+
+interface StepDetail {
+  type: 'command' | 'edit' | 'read' | 'write' | 'ipython' | 'mcp' | 'generic';
+  title: string;
+  subtitle?: string;
+  content: string;
+  extraInfo?: string;
+  status: 'success' | 'error' | 'running';
+}
+
+function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null): StepDetail {
+  const kind = event.kind || '';
+  const data = event.data || {};
+  const raw = data.raw || {};
+  
+  const isObs = isObservationEvent(event);
+  
+  if (kind.includes('CmdRun') || raw.action === 'run' || raw.observation === 'run') {
+    const cmd = raw.args?.command || raw.extras?.command || (actionEvent?.data?.raw?.args?.command) || '';
+    const output = raw.content || eventPreview(event) || '';
+    const exitCode = raw.extras?.exit_code ?? raw.exit_code ?? (raw.metadata?.exit_code);
+    const status = isObs ? (exitCode === 0 ? 'success' : 'error') : 'running';
+    
+    return {
+      type: 'command',
+      title: '执行终端命令',
+      subtitle: cmd,
+      content: output,
+      extraInfo: cmd,
+      status
+    };
+  }
+  
+  if (kind.includes('FileEdit') || raw.action === 'edit' || raw.observation === 'edit') {
+    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
+    const diff = raw.extras?.diff || raw.diff || '';
+    const status = isObs ? (diff || raw.content ? 'success' : 'error') : 'running';
+    
+    return {
+      type: 'edit',
+      title: '修改文件',
+      subtitle: path,
+      content: diff || raw.content || '',
+      extraInfo: path,
+      status
+    };
+  }
+  
+  if (kind.includes('FileRead') || raw.action === 'read' || raw.observation === 'read') {
+    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
+    const content = raw.content || '';
+    const status = isObs ? 'success' : 'running';
+    
+    return {
+      type: 'read',
+      title: '读取文件',
+      subtitle: path,
+      content: content,
+      extraInfo: path,
+      status
+    };
+  }
+  
+  if (kind.includes('FileWrite') || raw.action === 'write' || raw.observation === 'write') {
+    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
+    const content = raw.args?.content || raw.extras?.content || '';
+    const status = isObs ? 'success' : 'running';
+    
+    return {
+      type: 'write',
+      title: '写入文件',
+      subtitle: path,
+      content: content,
+      extraInfo: path,
+      status
+    };
+  }
+  
+  if (kind.includes('IPython') || raw.action === 'run_ipython' || raw.observation === 'run_ipython') {
+    const code = raw.args?.code || raw.extras?.code || (actionEvent?.data?.raw?.args?.code) || '';
+    const output = raw.content || '';
+    const status = isObs ? 'success' : 'running';
+    
+    return {
+      type: 'ipython',
+      title: '运行 IPython 代码',
+      subtitle: code.substring(0, 60),
+      content: output,
+      extraInfo: code,
+      status
+    };
+  }
+  
+  if (kind.includes('MCP') || raw.action === 'call_tool_mcp' || raw.observation === 'mcp') {
+    const name = raw.args?.name || raw.extras?.name || (actionEvent?.data?.raw?.args?.name) || '';
+    const mcpArgs = raw.args?.arguments || raw.extras?.arguments || (actionEvent?.data?.raw?.args?.arguments) || {};
+    const content = raw.content || (typeof raw.content === 'object' ? JSON.stringify(raw.content, null, 2) : '');
+    const status = isObs ? 'success' : 'running';
+    
+    return {
+      type: 'mcp',
+      title: `调用 MCP 工具: ${name}`,
+      subtitle: JSON.stringify(mcpArgs),
+      content: content,
+      extraInfo: JSON.stringify(mcpArgs, null, 2),
+      status
+    };
+  }
+  
+  const title = eventTitle(event);
+  const content = eventPreview(event);
+  const status = isObs ? 'success' : 'running';
+  
+  return {
+    type: 'generic',
+    title,
+    content,
+    status
+  };
+}
+
+function renderInlineStyles(line: string) {
+  const parts = line.split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
+  return parts.map((part, pIdx) => {
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={pIdx} className="markdown-inline-code">{part.slice(1, -1)}</code>;
+    }
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={pIdx}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={pIdx}>{part.slice(1, -1)}</em>;
+    }
+    return part;
+  });
+}
+
+function renderMarkdownSimple(text: string) {
+  if (!text) return null;
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  return parts.map((part, index) => {
+    if (part.startsWith('```')) {
+      const match = part.match(/```(\w*)\n([\s\S]*?)```/);
+      const lang = match ? match[1] : '';
+      const code = match ? match[2] : part.slice(3, -3);
+      return (
+        <div key={index} className="markdown-code-block">
+          {lang && <div className="code-block-lang">{lang}</div>}
+          <pre><code>{code.trim()}</code></pre>
+        </div>
+      );
+    }
+    
+    const lines = part.split(/\n/);
+    return lines.map((line, lIdx) => {
+      if (!line.trim()) return <div key={`${index}-${lIdx}`} className="p-break" />;
+      if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {
+        const content = line.trim().substring(2);
+        return (
+          <ul key={`${index}-${lIdx}`} className="markdown-ul">
+            <li>{renderInlineStyles(content)}</li>
+          </ul>
+        );
+      }
+      return (
+        <p key={`${index}-${lIdx}`} className="markdown-p">
+          {renderInlineStyles(line)}
+        </p>
+      );
+    });
+  });
+}
+
+function highlightDiff(diffText: string) {
+  if (!diffText) return null;
+  const lines = diffText.split('\n');
+  return lines.map((line, idx) => {
+    let className = 'diff-line';
+    if (line.startsWith('+')) className = 'diff-line add';
+    else if (line.startsWith('-')) className = 'diff-line del';
+    else if (line.startsWith('@')) className = 'diff-line info';
+    return (
+      <div key={idx} className={className}>
+        {line}
+      </div>
+    );
+  });
+}
+
 function MainApp() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [user, setUser] = useState<User | null>(null);
@@ -298,12 +516,12 @@ function MainApp() {
 
   // Load file content when selecting a file path
   useEffect(() => {
-    if (selectedFilePath && selectedProjectId && token) {
+    if (selectedFilePath && selectedProjectId && token && activeTab === 'files') {
       void loadFileContent(selectedFilePath);
     } else {
       setSelectedFileContent(null);
     }
-  }, [selectedFilePath, selectedProjectId, token]);
+  }, [selectedFilePath, selectedProjectId, token, activeTab]);
 
   // Automatically watch and sync active session running state to trigger streaming and busy loader
   useEffect(() => {
@@ -961,6 +1179,7 @@ function MainApp() {
         setExpandedDirs(prev => ({ ...prev, [node.path]: !isExpanded }));
       } else {
         setSelectedFilePath(node.path);
+        void loadFileContent(node.path);
       }
     }
 
@@ -1517,46 +1736,178 @@ function MainApp() {
               <section className="chat-panel">
                 <div className="panel-title"><MessageSquareText size={18} /> 对话与任务</div>
                 <div className="timeline">
-                  {events.map((event, index) => {
-                    if (!event) return null;
-                    const isToolCall = ((String(event.kind || '').includes('Action') || String(event.kind || '').includes('Observation')) &&
-                                       !String(event.kind || '').includes('Message')) ||
-                                       String(event.kind || '').includes('SystemPromptEvent');
-                    const eventId = event.id || `local-${index}`;
-                    const isCollapsed = collapsedTools[eventId] ?? (String(event.kind || '').includes('SystemPromptEvent') ? true : false);
+                  {(() => {
+                    const actionEventsMap = new Map<string, TimelineEvent>();
+                    const causeToObsMap = new Map<string, TimelineEvent>();
 
-                    if (isToolCall) {
-                      return (
-                        <div key={eventId} className="tool-card-collapsible">
-                          <button className="tool-card-header" onClick={() => toggleToolCollapse(eventId)}>
-                            <div className="tool-header-info">
-                              <Wrench size={14} className="tool-icon" />
-                              <strong>{eventTitle(event)}</strong>
-                              <span className="tool-name-meta">{toolNameMeta(event)}</span>
-                            </div>
-                            <span className="tool-toggle-icon">
-                              {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
-                            </span>
-                          </button>
-                          {!isCollapsed && (
-                            <div className="tool-card-body">
-                              <pre>{eventPreview(event)}</pre>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    }
+                    events.forEach(e => {
+                      const actId = e.data?.sdk_event_id ?? e.id;
+                      if (actId !== undefined && actId !== null) {
+                        actionEventsMap.set(String(actId), e);
+                      }
+                      const cause = e.data?.cause;
+                      if (cause !== undefined && cause !== null) {
+                        causeToObsMap.set(String(cause), e);
+                      }
+                    });
 
-                    return (
-                      <article className={`event-card ${String(event.kind || '').includes('error') ? 'error' : ''}`} key={eventId}>
-                        <div className="event-meta">
-                          <strong>{eventTitle(event)}</strong>
-                          <span>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}</span>
-                        </div>
-                        <pre>{eventPreview(event)}</pre>
-                      </article>
-                    );
-                  })}
+                    return events.map((event, index) => {
+                      if (!event) return null;
+                      const eventId = event.id || `local-${index}`;
+                      const timestamp = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '';
+
+                      if (isUserMessageEvent(event)) {
+                        const content = event.data?.message || event.data?.content || eventPreview(event);
+                        return (
+                          <div key={eventId} className="chat-bubble-container user-align">
+                            <div className="chat-bubble user-bubble">
+                              <div className="bubble-sender"><UserIcon size={13} /> 您</div>
+                              <div className="bubble-content">{content}</div>
+                              <div className="bubble-time">{timestamp}</div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (isAssistantMessageEvent(event)) {
+                        const rawText = event.data?.message || event.data?.content || event.data?.raw?.content || event.data?.raw?.args?.thought || eventPreview(event) || '';
+                        if (!rawText.trim()) return null;
+                        return (
+                          <div key={eventId} className="chat-bubble-container agent-align">
+                            <div className="chat-bubble agent-bubble">
+                              <div className="bubble-sender"><Bot size={13} /> Mghands Agent</div>
+                              <div className="bubble-content">{renderMarkdownSimple(rawText)}</div>
+                              <div className="bubble-time">{timestamp}</div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (isActionEvent(event)) {
+                        const actId = event.data?.sdk_event_id;
+                        const hasObsPair = actId !== undefined && actId !== null && causeToObsMap.has(String(actId));
+                        
+                        const thought = event.data?.raw?.args?.thought || event.data?.raw?.thought;
+                        const thoughtBubble = thought && thought.trim() ? (
+                          <div key={`${eventId}-thought`} className="chat-bubble-container agent-align">
+                            <div className="chat-bubble agent-bubble">
+                              <div className="bubble-sender"><Bot size={13} /> Mghands Agent</div>
+                              <div className="bubble-content">{renderMarkdownSimple(thought)}</div>
+                              <div className="bubble-time">{timestamp}</div>
+                            </div>
+                          </div>
+                        ) : null;
+
+                        if (hasObsPair) {
+                          return thoughtBubble;
+                        }
+
+                        const step = getStepDetail(event);
+                        const isCollapsed = collapsedTools[eventId] ?? false;
+
+                        return (
+                          <React.Fragment key={eventId}>
+                            {thoughtBubble}
+                            <div className="step-card running">
+                              <button className="step-header" onClick={() => toggleToolCollapse(eventId)}>
+                                <div className="step-header-left">
+                                  <Loader2 className="step-icon spin" size={15} />
+                                  <span className="step-title">{step.title}</span>
+                                  {step.subtitle && <span className="step-subtitle">{step.subtitle}</span>}
+                                </div>
+                                <div className="step-header-right">
+                                  <span className="step-status running">执行中...</span>
+                                  {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                                </div>
+                              </button>
+                              {!isCollapsed && (
+                                <div className="step-body">
+                                  {step.extraInfo && (
+                                    <div className="step-command-box">
+                                      <pre><code>{step.extraInfo}</code></pre>
+                                    </div>
+                                  )}
+                                  {step.content && (
+                                    <pre className="step-pre"><code>{step.content}</code></pre>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </React.Fragment>
+                        );
+                      }
+
+                      if (isObservationEvent(event)) {
+                        const causeId = event.data?.cause;
+                        const actionEvent = causeId !== undefined && causeId !== null ? actionEventsMap.get(String(causeId)) : null;
+                        const step = getStepDetail(event, actionEvent);
+                        const isCollapsed = collapsedTools[eventId] ?? false;
+
+                        const getIcon = () => {
+                          switch (step.type) {
+                            case 'command': return <Terminal size={15} className="step-icon command" />;
+                            case 'edit': return <FileEdit size={15} className="step-icon edit" />;
+                            case 'read': return <FileText size={15} className="step-icon read" />;
+                            case 'write': return <Save size={15} className="step-icon write" />;
+                            case 'ipython': return <FileCode size={15} className="step-icon ipython" />;
+                            case 'mcp': return <Cpu size={15} className="step-icon mcp" />;
+                            default: return <Wrench size={15} className="step-icon generic" />;
+                          }
+                        };
+
+                        return (
+                          <div key={eventId} className={`step-card ${step.status}`}>
+                            <button className="step-header" onClick={() => toggleToolCollapse(eventId)}>
+                              <div className="step-header-left">
+                                {getIcon()}
+                                <span className="step-title">{step.title}</span>
+                                {step.subtitle && <span className="step-subtitle">{step.subtitle}</span>}
+                              </div>
+                              <div className="step-header-right">
+                                {step.status === 'success' ? (
+                                  <span className="step-status success"><CheckCircle2 size={13} /> 成功</span>
+                                ) : (
+                                  <span className="step-status error"><AlertTriangle size={13} /> 失败</span>
+                                )}
+                                {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                              </div>
+                            </button>
+                            {!isCollapsed && (
+                              <div className="step-body">
+                                {step.type === 'command' && step.extraInfo && (
+                                  <div className="step-command-box">
+                                    <pre><code>$ {step.extraInfo}</code></pre>
+                                  </div>
+                                )}
+                                {step.type === 'edit' && step.content ? (
+                                  <div className="step-diff-box">
+                                    <pre>{highlightDiff(step.content)}</pre>
+                                  </div>
+                                ) : (
+                                  step.content && <pre className="step-pre"><code>{step.content}</code></pre>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+
+                      if (event.kind === 'agent.result' || event.kind === 'agent.error') {
+                        const isError = event.kind === 'agent.error';
+                        return (
+                          <article className={`event-card ${isError ? 'error' : 'success'}`} key={eventId}>
+                            <div className="event-meta">
+                              <strong>{isError ? '任务失败' : '任务完成'}</strong>
+                              <span>{timestamp}</span>
+                            </div>
+                            <pre>{eventPreview(event)}</pre>
+                          </article>
+                        );
+                      }
+
+                      return null;
+                    });
+                  })()}
                   {!events.length && (
                     <div className="empty-state">
                       <TerminalSquare size={42} />

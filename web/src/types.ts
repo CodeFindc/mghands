@@ -48,8 +48,19 @@ export type TimelineEvent = {
   id?: string;
   kind?: string;
   timestamp?: string;
-  data?: Record<string, unknown>;
-  [key: string]: unknown;
+  data?: {
+    event_type?: string;
+    source?: 'user' | 'agent' | 'environment' | 'hook';
+    sdk_event_id?: string | number;
+    sdk_timestamp?: string;
+    action?: string;
+    observation?: string;
+    cause?: string | number;
+    preview?: string;
+    raw?: any;
+    [key: string]: any;
+  };
+  [key: string]: any;
 };
 
 export type SystemSettings = Record<string, string>;

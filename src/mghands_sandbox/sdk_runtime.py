@@ -820,6 +820,15 @@ def _sdk_event_payload(event: Any) -> dict[str, Any]:
         'sdk_timestamp': getattr(event, 'timestamp', None),
         'raw': raw,
     }
+    action = getattr(event, 'action', None)
+    if action is not None:
+        payload['action'] = action
+    observation = getattr(event, 'observation', None)
+    if observation is not None:
+        payload['observation'] = observation
+    cause = getattr(event, 'cause', None)
+    if cause is not None:
+        payload['cause'] = cause
     try:
         visualize = getattr(event, 'visualize', None)
         if visualize is not None:

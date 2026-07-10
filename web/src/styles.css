@@ -1579,3 +1579,309 @@ dd {
   background: rgba(239, 68, 68, 0.15);
 }
 
+/* --- High-end Premium Chat Bubbles --- */
+.chat-bubble-container {
+  display: flex;
+  width: 100%;
+  margin-bottom: 0.85rem;
+}
+
+.user-align {
+  justify-content: flex-end;
+}
+
+.agent-align {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 80%;
+  padding: 0.9rem 1.15rem;
+  border-radius: 20px;
+  position: relative;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.chat-bubble:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+.user-bubble {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+  color: #ffffff;
+  border-bottom-right-radius: 4px;
+}
+
+.agent-bubble {
+  background: rgba(30, 41, 59, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.15);
+  color: #f1f5f9;
+  border-bottom-left-radius: 4px;
+  backdrop-filter: blur(12px);
+}
+
+.bubble-sender {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.user-bubble .bubble-sender {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.agent-bubble .bubble-sender {
+  color: #38bdf8;
+}
+
+.bubble-content {
+  word-break: break-word;
+}
+
+.bubble-time {
+  font-size: 0.65rem;
+  text-align: right;
+  margin-top: 0.35rem;
+  opacity: 0.6;
+}
+
+/* Markdown Rendering Elements inside Bubble */
+.markdown-p {
+  margin: 0 0 0.5rem 0;
+}
+.markdown-p:last-child {
+  margin-bottom: 0;
+}
+.markdown-inline-code {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  background: rgba(148, 163, 184, 0.18);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: #38bdf8;
+}
+.user-bubble .markdown-inline-code {
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+}
+.markdown-code-block {
+  margin: 0.6rem 0;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: #090d16;
+}
+.code-block-lang {
+  background: rgba(148, 163, 184, 0.06);
+  padding: 0.25rem 0.75rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: #64748b;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+.markdown-code-block pre {
+  margin: 0;
+  padding: 0.85rem;
+  overflow-x: auto;
+}
+.markdown-code-block code {
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+}
+.markdown-ul {
+  margin: 0 0 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.markdown-ul li {
+  margin-bottom: 0.25rem;
+}
+.p-break {
+  height: 0.5rem;
+}
+
+/* --- High-end Premium Step Cards --- */
+.step-card {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.35);
+  border-radius: 16px;
+  margin-bottom: 0.85rem;
+  overflow: hidden;
+  transition: all 0.2s ease;
+  backdrop-filter: blur(8px);
+}
+
+.step-card:hover {
+  border-color: rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.step-card.success {
+  border-left: 4px solid #10b981;
+}
+
+.step-card.error {
+  border-left: 4px solid #f43f5e;
+}
+
+.step-card.running {
+  border-left: 4px solid #3b82f6;
+}
+
+.step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  padding: 0.8rem 1.15rem;
+  cursor: pointer;
+  color: #f8fafc;
+}
+
+.step-header:hover {
+  background: rgba(148, 163, 184, 0.04);
+}
+
+.step-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  font-size: 0.86rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.step-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.step-icon.command { color: #38bdf8; }
+.step-icon.edit { color: #f59e0b; }
+.step-icon.read { color: #a855f7; }
+.step-icon.write { color: #10b981; }
+.step-icon.ipython { color: #ec4899; }
+.step-icon.mcp { color: #6366f1; }
+.step-icon.generic { color: #94a3b8; }
+
+.step-title {
+  color: #f8fafc;
+}
+
+.step-subtitle {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.76rem;
+  background: rgba(148, 163, 184, 0.1);
+  color: #cbd5e1;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  max-width: 250px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.step-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  text-transform: uppercase;
+}
+
+.step-status.success {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+}
+
+.step-status.error {
+  background: rgba(244, 63, 94, 0.12);
+  color: #fb7185;
+}
+
+.step-status.running {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+}
+
+.step-body {
+  padding: 1.15rem;
+  background: rgba(0, 0, 0, 0.35);
+  border-top: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.step-command-box {
+  background: #020617;
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.06);
+  margin-bottom: 0.75rem;
+}
+.step-command-box pre {
+  margin: 0;
+}
+.step-command-box code {
+  color: #38bdf8;
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+}
+
+.step-pre {
+  margin: 0;
+  overflow-x: auto;
+}
+.step-pre code {
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
+
+/* Diff Highlighting */
+.step-diff-box {
+  background: #0f172a;
+  border-radius: 10px;
+  padding: 0.85rem;
+  border: 1px solid rgba(148, 163, 184, 0.06);
+  overflow-x: auto;
+}
+.diff-line {
+  font-family: 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  white-space: pre;
+  color: #94a3b8;
+}
+.diff-line.add {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.diff-line.del {
+  background: rgba(244, 63, 94, 0.15);
+  color: #fb7185;
+}
+.diff-line.info {
+  color: #38bdf8;
+  opacity: 0.8;
+}
+

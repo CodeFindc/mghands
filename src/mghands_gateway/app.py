@@ -571,7 +571,8 @@ async def read_project_file(
     project = await _get_project_or_404(store, project_id, current_user)
 
     workspace_dir = _project_workspace(settings, project.user_id, project_id)
-    safe_path = (workspace_dir / path).resolve()
+    clean_path = str(path).lstrip('/').lstrip('\\')
+    safe_path = (workspace_dir / clean_path).resolve()
     if workspace_dir != safe_path and workspace_dir not in safe_path.parents:
         raise HTTPException(status.HTTP_403_FORBIDDEN, 'access denied')
 
