@@ -556,12 +556,16 @@ function MainApp() {
 
   async function createChat() {
     if (!token) return;
-    const name = window.prompt("请输入新会话名称:", `会话 - ${new Date().toLocaleString()}`);
-    if (name === null) return;
-    const finalName = name.trim() || `会话 - ${new Date().toLocaleString()}`;
+    const date = new Date();
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
+    const hh = String(date.getHours()).padStart(2, '0');
+    const min = String(date.getMinutes()).padStart(2, '0');
+    const name = `会话 - ${yyyy}-${mm}-${dd} ${hh}:${min}`;
     setBusy(true);
     try {
-      const project = await api.createProject(token, finalName, selectedSkillNames);
+      const project = await api.createProject(token, name, selectedSkillNames);
       const list = await api.projects(token);
       setProjects(list);
       await selectProject(project.project_id);
