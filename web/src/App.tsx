@@ -242,8 +242,8 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
   const isObs = isObservationEvent(event);
   
   if (kind.includes('CmdRun') || raw.action === 'run' || raw.observation === 'run') {
-    const cmd = raw.args?.command || raw.extras?.command || (actionEvent?.data?.raw?.args?.command) || '';
-    const output = raw.content || eventPreview(event) || '';
+    const cmd = String(raw.args?.command || raw.extras?.command || (actionEvent?.data?.raw?.args?.command) || '');
+    const output = String(raw.content || eventPreview(event) || '');
     const exitCode = raw.extras?.exit_code ?? raw.exit_code ?? (raw.metadata?.exit_code);
     const status = isObs ? (exitCode === 0 ? 'success' : 'error') : 'running';
     
@@ -258,23 +258,23 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
   }
   
   if (kind.includes('FileEdit') || raw.action === 'edit' || raw.observation === 'edit') {
-    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
-    const diff = raw.extras?.diff || raw.diff || '';
+    const path = String(raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '');
+    const diff = String(raw.extras?.diff || raw.diff || '');
     const status = isObs ? (diff || raw.content ? 'success' : 'error') : 'running';
     
     return {
       type: 'edit',
       title: '修改文件',
       subtitle: path,
-      content: diff || raw.content || '',
+      content: diff || String(raw.content || ''),
       extraInfo: path,
       status
     };
   }
   
   if (kind.includes('FileRead') || raw.action === 'read' || raw.observation === 'read') {
-    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
-    const content = raw.content || '';
+    const path = String(raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '');
+    const content = String(raw.content || '');
     const status = isObs ? 'success' : 'running';
     
     return {
@@ -288,8 +288,8 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
   }
   
   if (kind.includes('FileWrite') || raw.action === 'write' || raw.observation === 'write') {
-    const path = raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '';
-    const content = raw.args?.content || raw.extras?.content || '';
+    const path = String(raw.args?.path || raw.extras?.path || (actionEvent?.data?.raw?.args?.path) || '');
+    const content = String(raw.args?.content || raw.extras?.content || '');
     const status = isObs ? 'success' : 'running';
     
     return {
@@ -303,8 +303,8 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
   }
   
   if (kind.includes('IPython') || raw.action === 'run_ipython' || raw.observation === 'run_ipython') {
-    const code = raw.args?.code || raw.extras?.code || (actionEvent?.data?.raw?.args?.code) || '';
-    const output = raw.content || '';
+    const code = String(raw.args?.code || raw.extras?.code || (actionEvent?.data?.raw?.args?.code) || '');
+    const output = String(raw.content || '');
     const status = isObs ? 'success' : 'running';
     
     return {
@@ -318,9 +318,9 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
   }
   
   if (kind.includes('MCP') || raw.action === 'call_tool_mcp' || raw.observation === 'mcp') {
-    const name = raw.args?.name || raw.extras?.name || (actionEvent?.data?.raw?.args?.name) || '';
+    const name = String(raw.args?.name || raw.extras?.name || (actionEvent?.data?.raw?.args?.name) || '');
     const mcpArgs = raw.args?.arguments || raw.extras?.arguments || (actionEvent?.data?.raw?.args?.arguments) || {};
-    const content = raw.content || (typeof raw.content === 'object' ? JSON.stringify(raw.content, null, 2) : '');
+    const content = typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content, null, 2);
     const status = isObs ? 'success' : 'running';
     
     return {
@@ -333,8 +333,8 @@ function getStepDetail(event: TimelineEvent, actionEvent?: TimelineEvent | null)
     };
   }
   
-  const title = eventTitle(event);
-  const content = eventPreview(event);
+  const title = String(eventTitle(event) || '');
+  const content = String(eventPreview(event) || '');
   const status = isObs ? 'success' : 'running';
   
   return {
@@ -1757,7 +1757,18 @@ function MainApp() {
                       const timestamp = event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '';
 
                       if (isUserMessageEvent(event)) {
-                        const content = event.data?.message || event.data?.content || eventPreview(event);
+                        let content = '';
+                        const candidates = [
+                          event.data?.message,
+                          event.data?.content,
+                          eventPreview(event)
+                        ];
+                        for (const c of candidates) {
+                          if (c !== undefined && c !== null) {
+                            content = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
+                            break;
+                          }
+                        }
                         return (
                           <div key={eventId} className="chat-bubble-container user-align">
                             <div className="chat-bubble user-bubble">
@@ -1770,7 +1781,20 @@ function MainApp() {
                       }
 
                       if (isAssistantMessageEvent(event)) {
-                        const rawText = event.data?.message || event.data?.content || event.data?.raw?.content || event.data?.raw?.args?.thought || eventPreview(event) || '';
+                        let rawText = '';
+                        const candidates = [
+                          event.data?.message,
+                          event.data?.content,
+                          event.data?.raw?.content,
+                          event.data?.raw?.args?.thought,
+                          eventPreview(event)
+                        ];
+                        for (const c of candidates) {
+                          if (c !== undefined && c !== null) {
+                            rawText = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
+                            break;
+                          }
+                        }
                         if (!rawText.trim()) return null;
                         return (
                           <div key={eventId} className="chat-bubble-container agent-align">
@@ -1787,7 +1811,17 @@ function MainApp() {
                         const actId = event.data?.sdk_event_id;
                         const hasObsPair = actId !== undefined && actId !== null && causeToObsMap.has(String(actId));
                         
-                        const thought = event.data?.raw?.args?.thought || event.data?.raw?.thought;
+                        let thought = '';
+                        const thoughtCandidates = [
+                          event.data?.raw?.args?.thought,
+                          event.data?.raw?.thought
+                        ];
+                        for (const c of thoughtCandidates) {
+                          if (c !== undefined && c !== null) {
+                            thought = typeof c === 'string' ? c : JSON.stringify(c, null, 2);
+                            break;
+                          }
+                        }
                         const thoughtBubble = thought && thought.trim() ? (
                           <div key={`${eventId}-thought`} className="chat-bubble-container agent-align">
                             <div className="chat-bubble agent-bubble">
