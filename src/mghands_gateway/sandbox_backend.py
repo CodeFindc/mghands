@@ -199,6 +199,14 @@ class DockerSandboxBackend:
             except ValueError:
                 pass
 
+        host_workspace_path_str = str(host_workspace_dir)
+        if len(host_workspace_path_str) >= 2 and host_workspace_path_str[1] == ':':
+            drive = host_workspace_path_str[0].lower()
+            rest = host_workspace_path_str[2:].replace('\\', '/')
+            if not rest.startswith('/'):
+                rest = '/' + rest
+            host_workspace_path_str = f'/{drive}{rest}'
+
         mount_path = mount_path or self.settings.sandbox_workspace_mount_path
         container_args = [
             'run',
@@ -210,7 +218,7 @@ class DockerSandboxBackend:
             '-e',
             f'OH_SESSION_API_KEYS_0={session_api_key}',
             '-v',
-            f'{host_workspace_dir}:{mount_path}',
+            f'{host_workspace_path_str}:{mount_path}',
             '--memory',
             sandbox_memory_limit,
             '--cpus',
