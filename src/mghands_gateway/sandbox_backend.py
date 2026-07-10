@@ -191,23 +191,33 @@ class DockerSandboxBackend:
         sandbox_cpus = sandbox_cpus or self.settings.sandbox_cpus
         sandbox_pids_limit = sandbox_pids_limit if sandbox_pids_limit is not None else self.settings.sandbox_pids_limit
 
-        host_workspace_dir = workspace_dir
+        # Determine volume mount configuration
+        volume_mount = ''
         if self.settings.host_data_root:
+            # Option A: host directory bind mount
+            host_workspace_dir = workspace_dir
             try:
                 rel_path = workspace_dir.relative_to(self.settings.data_root.resolve())
                 host_workspace_dir = self.settings.host_data_root / rel_path
             except ValueError:
                 pass
 
-        host_workspace_path_str = str(host_workspace_dir)
-        if len(host_workspace_path_str) >= 2 and host_workspace_path_str[1] == ':':
-            drive = host_workspace_path_str[0].lower()
-            rest = host_workspace_path_str[2:].replace('\\', '/')
-            if not rest.startswith('/'):
-                rest = '/' + rest
-            host_workspace_path_str = f'/{drive}{rest}'
+            host_workspace_path_str = str(host_workspace_dir)
+            if len(host_workspace_path_str) >= 2 and host_workspace_path_str[1] == ':':
+                drive = host_workspace_path_str[0].lower()
+                rest = host_workspace_path_str[2:].replace('\\', '/')
+                if not rest.startswith('/'):
+                    rest = '/' + rest
+                host_workspace_path_str = f'/{drive}{rest}'
 
-        mount_path = mount_path or self.settings.sandbox_workspace_mount_path
+            mount_path = mount_path or self.settings.sandbox_workspace_mount_path
+            volume_mount = f'{host_workspace_path_str}:{mount_path}'
+        else:
+            # Option B: Named volume mghands-data
+            volume_mount = 'mghands-data:/data/mghands'
+            # Override the userspace root to point to the shared volume subpath
+            userspace_root = str(workspace_dir)
+
         container_args = [
             'run',
             '-d',
@@ -218,7 +228,7 @@ class DockerSandboxBackend:
             '-e',
             f'OH_SESSION_API_KEYS_0={session_api_key}',
             '-v',
-            f'{host_workspace_path_str}:{mount_path}',
+            volume_mount,
             '--memory',
             sandbox_memory_limit,
             '--cpus',

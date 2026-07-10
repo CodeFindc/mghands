@@ -5,11 +5,10 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/data/mghands
+      - mghands-data:/data/mghands
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       MGHANDS_DATA_ROOT: /data/mghands
-      MGHANDS_HOST_DATA_ROOT: ${MGHANDS_HOST_DATA_ROOT:-D:/iso/Mghands/data}
       MGHANDS_DATABASE_PATH: /data/mghands/sessions.sqlite3
       MGHANDS_SANDBOX_WORKSPACE_ROOT: /data/mghands/workspaces
       MGHANDS_SHARED_SKILLS_ROOT: /data/mghands/shared_skills
@@ -31,6 +30,10 @@ services:
     image: mghands-sandbox:latest
     profiles:
       - build-only
+
+volumes:
+  mghands-data:
+    name: mghands-data
 
 networks:
   mghands:
